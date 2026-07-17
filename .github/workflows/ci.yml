@@ -1,0 +1,67 @@
+name: kernel-boot-test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-unknown-none
+            qemu_bin: qemu-system-aarch64
+            qemu_flags: -M raspi3b -display none -serial stdio
+            bin_name: kernel8.img
+          - target: x86_64-unknown-none
+            qemu_bin: qemu-system-x86_64
+            # Limine often runs fine with standard QEMU defaults
+            qemu_flags: -M q35 -m 256M -display none -serial stdio
+            bin_name: mitosos.elf
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          # Install cross-compiler for ARM and necessary QEMU packages
+          sudo apt-get install -y qemu-system-arm qemu-system-x86 gcc-aarch64-linux-gnu
+
+      - name: Install Nightly Rust toolchain
+        run: |
+          rustup toolchain install nightly
+          rustup default nightly
+          rustup target add ${{ matrix.target }}
+          # This provides rust-objcopy natively and much faster than cargo install
+          rustup component add llvm-tools-preview
+
+      - name: Build kernel
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Prepare boot image (ARM only)
+        if: matrix.target == 'aarch64-unknown-none'
+        run: |
+          # 1. Dynamically locate the toolchain's binary directory
+          TOOLCHAIN_BIN=$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | grep host | cut -f2 -d' ')/bin
+          
+          # 2. Add it to the PATH for this step only
+          export PATH=$PATH:$TOOLCHAIN_BIN
+          
+          # 3. Now run the command
+          rust-objcopy --strip-all -O binary target/${{ matrix.target }}/release/mitosos ${{ matrix.bin_name }}
+
+
+      - name: Boot in QEMU and check serial output
+        run: |
+          set -o pipefail
+          # Select correct kernel based on target
+          KERNEL_ARGS="${{ matrix.target == 'aarch64-unknown-none' && '-kernel kernel8.img' || '-kernel target/x86_64-unknown-none/release/mitosos' }}"
+          
+          # Run the specific QEMU for the matrix target
+          timeout 20s ${{ matrix.qemu_bin }} ${{ matrix.qemu_flags }} $KERNEL_ARGS 2>&1 | tee qemu_output.log || true
+          
+          echo "----- captured serial output -----"
+          cat qemu_output.log
+          grep -q "mitosOS: kernel_main reached. Boot OK." qemu_output.log
