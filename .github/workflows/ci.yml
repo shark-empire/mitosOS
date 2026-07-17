@@ -1,0 +1,39 @@
+name: kernel-boot-test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  boot-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install QEMU (provides qemu-system-aarch64)
+        run: sudo apt-get update && sudo apt-get install -y qemu-system-arm
+
+      - name: Install Nightly Rust toolchain
+        run: |
+          rustup toolchain install nightly
+          rustup default nightly
+          rustup target add aarch64-unknown-none
+
+      - name: Install cargo-binutils (for rust-objcopy)
+        run: cargo install cargo-binutils
+
+      - name: Build kernel
+        run: cargo build --release
+
+      - name: Convert ELF to raw kernel8.img
+        run: rust-objcopy --strip-all -O binary target/aarch64-unknown-none/release/mitosos kernel8.img
+
+      - name: Boot in QEMU and check serial output
+        run: |
+          set -o pipefail
+          # timeout guards against a kernel that hangs instead of parking
+          # cleanly; `|| true` lets us still inspect + grep the log either way.
+          timeout 20s qemu-system-aarch64 -M raspi3b -kernel kernel8.img -serial stdio -display none 2>&1 | tee qemu_output.log || true
+          echo "----- captured serial output -----"
+          cat qemu_output.log
+          grep -q "mitosOS: kernel_main reached. Boot OK." qemu_output.log
