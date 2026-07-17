@@ -1,0 +1,4 @@
+/target
+**/target
+/kernel8.img
+qemu_output.log
