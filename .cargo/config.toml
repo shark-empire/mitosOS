@@ -1,7 +1,0 @@
-# Configuration for x86_64 (custom bootloader — see /bootloader)
-[target.x86_64-unknown-none]
-rustflags = ["-C", "link-arg=-Tlinker_x86.ld"]
-
-# Configuration for Raspberry Pi (AArch64)
-[target.aarch64-unknown-none]
-rustflags = ["-C", "link-arg=-Tlinker_rpi.ld"]
