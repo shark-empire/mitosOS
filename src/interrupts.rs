@@ -230,6 +230,8 @@ mod imp {
             IDT.entries[3].set_handler(exception_handler_stub as *const () as usize);
             IDT.entries[0x20].set_handler(timer_handler_stub as *const () as usize);
             IDT.entries[0x24].set_handler(uart_handler_stub as *const () as usize);
+            IDT.entries[0x80].set_handler(syscall_handler_stub as *const () as usize);
+
 
             #[repr(C, packed)]
             struct IdtPointer {
@@ -319,6 +321,22 @@ core::arch::global_asm!(
       out 0x20, al
       pop r15; pop r14; pop r13; pop r12; pop r11; pop r10; pop r9; pop r8; pop rbp; pop rdi; pop rsi; pop rdx; pop rcx; pop rbx; pop rax
       iretq
+    #[cfg(target_arch = "x86_64")]
+core::arch::global_asm!(
+    r#"
+    .global syscall_handler_stub
+    syscall_handler_stub:
+      push rax; push rcx; push rdx; push rsi; push rdi; push r8; push r9; push r10; push r11
+      // Pass registers: rax (syscall num) -> rdi, rbx -> rsi, rcx -> rdx, rdx -> rcx
+      mov rdi, rax
+      mov rsi, rbx
+      mov rdx, rcx
+      mov rcx, r8
+      call syscall_handler
+      pop r11; pop r10; pop r9; pop r8; pop rdi; pop rsi; pop rdx; pop rcx; pop rax
+      iretq
+
+    
     "#
 );
 
@@ -333,7 +351,9 @@ core::arch::global_asm!(
     .global exception_vector_table
     
     exception_vector_table:
-      // --- 1. Current EL with SP_EL0 ---
+      // =========================================================
+      // 1. Current EL with SP_0 (4 vectors, 128 bytes each)
+      // =========================================================
       b .
       .balign 128
       b .
@@ -343,11 +363,13 @@ core::arch::global_asm!(
       b .
       .balign 128
 
-      // --- 2. Current EL with SP_ELx ---
+      // =========================================================
+      // 2. Current EL with SP_x (4 vectors, 128 bytes each)
+      // =========================================================
       b .
       .balign 128
       
-      // --- IRQ Handler Vector Slot ---
+      // --- IRQ Handler Vector Slot (Current EL, SP_x) ---
       sub sp, sp, #272
 
       stp x0, x1, [sp, #0]
@@ -408,17 +430,83 @@ core::arch::global_asm!(
       b .
       .balign 128
 
-      // --- 3. Lower EL using AArch64 ---
+      // =========================================================
+      // 3. Lower EL using AArch64 (4 vectors, 128 bytes each)
+      // =========================================================
+      
+      // --- Slot 0: Synchronous Exception / System Call (svc) from User Space ---
+      sub sp, sp, #272
+
+      stp x0, x1, [sp, #0]
+      stp x2, x3, [sp, #16]
+      stp x4, x5, [sp, #32]
+      stp x6, x7, [sp, #48]
+      stp x8, x9, [sp, #64]
+      stp x10, x11, [sp, #80]
+      stp x12, x13, [sp, #96]
+      stp x14, x15, [sp, #112]
+      stp x16, x17, [sp, #128]
+      stp x18, x19, [sp, #144]
+      stp x20, x21, [sp, #160]
+      stp x22, x23, [sp, #176]
+      stp x24, x25, [sp, #192]
+      stp x26, x27, [sp, #208]
+      stp x28, x29, [sp, #224]
+      str x30, [sp, #240]
+
+      mrs x0, spsr_el1
+      mrs x1, elr_el1
+      stp x0, x1, [sp, #248]
+
+      // Map syscall arguments for syscall_handler(sys_num, arg1, arg2, arg3)
+      // x8 holds system call number, x0, x1, x2 hold arguments
+      mov x3, x2
+      mov x2, x1
+      mov x1, x0
+      mov x0, x8 
+      bl syscall_handler
+
+      // Save return value into saved x0 position on stack
+      str x0, [sp, #0]
+
+      ldp x0, x1, [sp, #248]
+      msr spsr_el1, x0
+      msr elr_el1, x1
+
+      ldp x0, x1, [sp, #0]
+      ldp x2, x3, [sp, #16]
+      ldp x4, x5, [sp, #32]
+      ldp x6, x7, [sp, #48]
+      ldp x8, x9, [sp, #64]
+      ldp x10, x11, [sp, #80]
+      ldp x12, x13, [sp, #96]
+      ldp x14, x15, [sp, #112]
+      ldp x16, x17, [sp, #128]
+      ldp x18, x19, [sp, #144]
+      ldp x20, x21, [sp, #160]
+      ldp x22, x23, [sp, #176]
+      ldp x24, x25, [sp, #192]
+      ldp x26, x27, [sp, #208]
+      ldp x28, x29, [sp, #224]
+      ldr x30, [sp, #240]
+
+      add sp, sp, #272
+      eret
+      .balign 128
+
+      // --- Slot 1: IRQ from Lower EL ---
       b .
       .balign 128
+      // --- Slot 2: FIQ from Lower EL ---
       b .
       .balign 128
-      b .
-      .balign 128
+      // --- Slot 3: Error from Lower EL ---
       b .
       .balign 128
 
-      // --- 4. Lower EL using AArch32 ---
+      // =========================================================
+      // 4. Lower EL using AArch32 (4 vectors, 128 bytes each)
+      // =========================================================
       b .
       .balign 128
       b .
@@ -429,6 +517,7 @@ core::arch::global_asm!(
       .balign 128
     "#
 );
+
 
 // ==========================================
 // Public Interface Methods
