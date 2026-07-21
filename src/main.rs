@@ -50,7 +50,7 @@ let inited: Option<ramdisk::TarFileSystem> = unsafe {
 };
 
 
-    if initrd.is_some() {
+    if inited.is_some() {
         let _ = writeln!(uart, "mitosOS: initrd detected and mounted successfully.");
     } else {
         let _ = writeln!(uart, "mitosOS: no valid initrd found at target address.");
@@ -58,7 +58,7 @@ let inited: Option<ramdisk::TarFileSystem> = unsafe {
     // -------------------------------------
 
     // Pass the initrd to the shell
-    shell::run(&mut uart, initrd);
+    shell::run(&mut uart, inited);
 }
 
 #[panic_handler]
