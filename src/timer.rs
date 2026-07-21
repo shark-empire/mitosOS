@@ -14,7 +14,9 @@ pub mod hardware {
 
     /// Writes a byte to an x86 I/O port
     unsafe fn outb(port: u16, val: u8) {
-        asm!("out dx, al", in("dx") port, in("al") val, options(nomem, nostack, preserves_flags));
+      unsafe {
+         asm!("out dx, al", in("dx") port, in("al") val, options(nomem, nostack, preserves_flags));
+              }
     }
 
     /// Initializes the x86 Programmable Interval Timer (PIT)
