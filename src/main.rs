@@ -16,6 +16,8 @@ mod vmm;
 pub mod sync;
 pub mod syscall;
 pub mod version;
+pub mod timer;
+
 
 use core::fmt::Write;
 use core::panic::PanicInfo;
