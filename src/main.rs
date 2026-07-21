@@ -42,14 +42,18 @@ pub extern "C" fn kmain() -> ! {
     let _ = writeln!(uart, "mitosOS: kernel_main reached. Boot OK.");
 
     // --- ADDED: Ramdisk Initialization ---
-    // NOTE: 0x200_000 is a placeholder address. You must update this address to 
-    // match wherever your bootloader (or QEMU -initrd argument) places the tar file!
-
-// Match the capacity (0x20_000) to the bootloader's 128KB limit
-let inited: Option<ramdisk::TarFileSystem> = unsafe { 
-    ramdisk::TarFileSystem::new(0x200_000, 0x20_000) 
-};
-
+    // Use the embedded tarball for ARM64, and the memory address for x86_64
+    let inited: Option<ramdisk::TarFileSystem> = {
+        #[cfg(target_arch = "aarch64")]
+        {
+            ramdisk::TarFileSystem::new_embedded()
+        }
+        
+        #[cfg(target_arch = "x86_64")]
+        {
+            unsafe { ramdisk::TarFileSystem::new(0x200_000, 0x20_000) }
+        }
+    };
 
     if inited.is_some() {
         let _ = writeln!(uart, "mitosOS: initrd detected and mounted successfully.");
@@ -58,16 +62,15 @@ let inited: Option<ramdisk::TarFileSystem> = unsafe {
     }
 
     unsafe {
-    crate::task::spawn(background_worker);
-}
-
+        crate::task::spawn(background_worker);
+    }
     // -------------------------------------
 
     // Pass the initrd to the shell
     shell::run(&mut uart, inited);
 }
 
-// Somewhere in your main.rs or a background worker module:
+// Background worker module:
 extern "C" fn background_worker() -> ! {
     loop {
         // You can write a tiny UART print or loop here to prove it's running
@@ -77,8 +80,6 @@ extern "C" fn background_worker() -> ! {
         }
     }
 }
-
-
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
