@@ -24,6 +24,17 @@ if [ "$STAGE2_SIZE" -gt "$STAGE2_MAX_BYTES" ]; then
 fi
 truncate -s "$STAGE2_MAX_BYTES" stage2.bin
 
+# =========================================================================
+# MOVED: Create Ramdisk BEFORE building the kernel!
+# =========================================================================
+echo "==> Creating Ramdisk (rootfs.tar)"
+# 1. Create a dummy file for the CI and your shell to find
+echo "Hello from mitosOS in-memory filesystem!" > test.txt
+# 2. Package it into a standard uncompressed tarball
+tar -cf rootfs.tar test.txt
+# 3. Strictly pad the tarball to 128KB so stage2.s doesn't over-read and crash
+truncate -s "$RAMDISK_MAX_BYTES" rootfs.tar
+
 echo "==> Building kernel ($KERNEL_TARGET)"
 cargo build --release --target "$KERNEL_TARGET"
 
@@ -41,14 +52,6 @@ if [ "$KERNEL_SIZE" -gt "$KERNEL_MAX_BYTES" ]; then
     exit 1
 fi
 truncate -s "$KERNEL_MAX_BYTES" kernel.bin
-
-echo "==> Creating Ramdisk (rootfs.tar)"
-# 1. Create a dummy file for the CI and your shell to find
-echo "Hello from mitosOS in-memory filesystem!" > test.txt
-# 2. Package it into a standard uncompressed tarball
-tar -cf rootfs.tar test.txt
-# 3. Strictly pad the tarball to 128KB so stage2.s doesn't over-read and crash
-truncate -s "$RAMDISK_MAX_BYTES" rootfs.tar
 
 echo "==> Building disk image (stage1 + stage2 + kernel + ramdisk)"
 # Because we strictly padded everything, concatenating them places rootfs.tar exactly at LBA 321!
