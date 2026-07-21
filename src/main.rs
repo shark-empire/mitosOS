@@ -31,30 +31,17 @@ pub extern "C" fn kmain() -> ! {
         interrupts::init();
 
         // 2. Initialize the heap allocator subsystem.
-        // (Ensures .bss doesn't collide with 0x150_000 as kernel grows).
         memory::init_memory_subsystem(0x150_000, 0xA0_000);
-
-        // 2b. Reserve the boot/BIOS region and everything up through the
-        // heap so the physical frame allocator never hands out a frame
-        // that's already in use by the kernel image or heap.
         memory::protect_boot_memory(0x1F0_000);
-
-        // 2c. VMM self-test: build a throwaway page table and exercise
-        // vmm.rs's table-walk and MapFlags encoding. The resulting table
-        // is never installed (no CR3/TTBR0 write), so this can't affect
-        // the kernel's currently-working flat/identity memory model --
-        // it just proves the paging code is correct before anything
-        // depends on it.
         vmm_self_test(&mut uart);
         
+        // 3. Initialize the hardware timer frequencies
         crate::timer::hardware::init();
 
-
-        // 3. Unmask the UART's interrupt line.
+        // 4. Unmask the UART's interrupt line.
         uart.enable_interrupts();
-
-        // 4. Unmask CPU-level interrupts (STI on x86, DAIFCLR on ARM64).
-        interrupts::enable_cpu_interrupts();
+        
+        // STOP! Do not call `interrupts::enable_cpu_interrupts()` yet!
     }
 
     let _ = writeln!(uart, "mitosOS: kernel_main reached. Boot OK.");
@@ -79,13 +66,22 @@ pub extern "C" fn kmain() -> ! {
         let _ = writeln!(uart, "mitosOS: WARN - No valid initrd found.");
     }
 
-    // --- Spawn Background Worker Task ---
+    // --- Spawn Background Worker Tasks ---
+    // Spawn these FIRST so the scheduler has something to swap to.
     crate::task::spawn(background_worker, crate::task::ExecutionMode::SharedThread);
     crate::task::spawn(background_worker_2, crate::task::ExecutionMode::SharedThread);
+
+    // --- Enable Preemptive Multitasking ---
+    unsafe {
+        // NOW unmask CPU-level interrupts (STI / DAIFCLR).
+        // The hardware timer will begin ticking immediately after this line.
+        interrupts::enable_cpu_interrupts();
+    }
 
     // --- Start Kernel Shell ---
     shell::run(&mut uart, inited);
 }
+
 
 /// Builds a scratch page table and maps two pages through it, purely to
 /// exercise vmm.rs's table-walk and `MapFlags` encoding. Never installed
@@ -119,9 +115,16 @@ unsafe fn vmm_self_test(uart: &mut uart::Uart) {
 
 /// Background worker task demonstrating preemptive task execution
 extern "C" fn background_worker() -> ! {
-    loop {
-        // Yield voluntarily or let the hardware timer interrupt switch tasks
-        crate::task::yield_now();
+     loop {
+        let mut uart = unsafe { crate::uart::Uart::init() };
+        let _ = core::fmt::Write::write_str(&mut uart, "[Worker 1: Tick]\n");
+        
+        // Spin to waste time. The hardware timer should interrupt this automatically!
+        for _ in 0..5_000_000 {
+            core::hint::spin_loop();
+        }
+        
+        // NOTICE: No yield_now() here anymore!
     }
 }
 
@@ -165,9 +168,7 @@ extern "C" fn background_worker_2() -> ! {
     loop {
         let mut uart = unsafe { crate::uart::Uart::init() };
         let _ = core::fmt::Write::write_str(&mut uart, "[Worker 2: Tick]\n");
-        for _ in 0..200_000 {
+        for _ in 0..5_000_000 {
             core::hint::spin_loop();
-        }
-        crate::task::yield_now();
     }
 }
