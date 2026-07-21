@@ -31,12 +31,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y qemu-system-arm qemu-system-x86 gcc-aarch64-linux-gnu nasm
 
-      - name: Install Nightly Rust toolchain
-        run: |
-          rustup toolchain install nightly
-          rustup default nightly
-          rustup target add ${{ matrix.target }}
-          rustup component add llvm-tools-preview
+         - name: Setup Rust Nightly Toolchain
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: x86_64-unknown-none, aarch64-unknown-none
+          components: llvm-tools-preview
 
       # --- ADDED: Create rootfs.tar before building ARM kernel ---
       - name: Create ramdisk (ARM only)
