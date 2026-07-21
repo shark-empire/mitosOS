@@ -68,7 +68,7 @@ let inited: Option<ramdisk::TarFileSystem> = unsafe {
 }
 
 // Somewhere in your main.rs or a background worker module:
-unsafe extern "C" fn background_worker() -> ! {
+extern "C" fn background_worker() -> ! {
     loop {
         // You can write a tiny UART print or loop here to prove it's running
         // e.g., printing a dot or ticker every time it cycles
