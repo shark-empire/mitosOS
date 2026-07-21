@@ -2,7 +2,7 @@ extern crate alloc;
 
 use crate::ramdisk::TarFileSystem;
 use crate::syscall::SYS_UNAME;
-use crate::uart::Uart;
+use crate::uart::{Uart, UartError};
 use crate::version::UtsName;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -15,10 +15,8 @@ const LF: u8 = b'\n';
 
 pub fn run(uart: &mut Uart, ramdisk: Option<TarFileSystem>) -> ! {
     let _ = writeln!(uart, "\nmitosOS shell -- type 'help' for commands.");
-
     let mut current_line = String::new();
     let mut history: Vec<String> = Vec::new();
-
     let _ = write!(uart, "mitosOS> ");
 
     loop {
@@ -39,12 +37,10 @@ pub fn run(uart: &mut Uart, ramdisk: Option<TarFileSystem>) -> ! {
                 CR | LF => {
                     let _ = writeln!(uart);
                     let trimmed = current_line.trim();
-
                     if !trimmed.is_empty() {
                         history.push(String::from(trimmed));
                         run_command(uart, trimmed, &history, &ramdisk);
                     }
-
                     current_line.clear();
                     let _ = write!(uart, "mitosOS> ");
                 }
@@ -79,17 +75,15 @@ fn run_command(uart: &mut Uart, line: &str, history: &[String], ramdisk: &Option
     if args.is_empty() {
         return;
     }
-
     let cmd = args[0];
 
     match cmd {
         "help" => {
-    let _ = writeln!(
-        uart,
-        "commands: help, about, uname, ps, echo <text>, history, memstat, panic, ls, cat <file>"
-    );
-}
-
+            let _ = writeln!(
+                uart,
+                "commands: help, about, uname, ps, echo <text>, history, memstat, panic, ls, cat <file>, stat <file>, raw <file>, rxtest"
+            );
+        }
         "about" => {
             let arch = if cfg!(target_arch = "x86_64") {
                 "x86_64 (Intel/AMD Bare-Metal)"
@@ -98,7 +92,6 @@ fn run_command(uart: &mut Uart, line: &str, history: &[String], ramdisk: &Option
             } else {
                 "Unknown Architecture"
             };
-
             let _ = writeln!(
                 uart,
                 "mitosOS Phase 1 -- Engine: O(1) Allocator Core | Target: {}",
@@ -108,27 +101,24 @@ fn run_command(uart: &mut Uart, line: &str, history: &[String], ramdisk: &Option
         "uname" => {
             cmd_uname(uart);
         }
-
         "ps" => {
-    let tasks = crate::task::get_task_list();
-    let _ = writeln!(uart, "--- mitosOS Task Table ---");
-    let _ = writeln!(uart, "ID  | Parent | State     | Memory Root");
-    let _ = writeln!(uart, "----+--------+-----------+-------------------");
-    
-    for t in tasks {
-        let state_str = match t.state {
-            crate::task::TaskState::Ready => "Ready",
-            crate::task::TaskState::Running => "Running",
-            crate::task::TaskState::Terminated => "Terminated",
-        };
-        let _ = writeln!(
-            uart,
-            "{:<3} | {:<6} | {:<9} | 0x{:016x}",
-            t.id, t.parent_id, state_str, t.memory_root
-        );
-    }
-}
-
+            let tasks = crate::task::get_task_list();
+            let _ = writeln!(uart, "--- mitosOS Task Table ---");
+            let _ = writeln!(uart, "ID | Parent | State | Memory Root");
+            let _ = writeln!(uart, "----+--------+-----------+-------------------");
+            for t in tasks {
+                let state_str = match t.state {
+                    crate::task::TaskState::Ready => "Ready",
+                    crate::task::TaskState::Running => "Running",
+                    crate::task::TaskState::Terminated => "Terminated",
+                };
+                let _ = writeln!(
+                    uart,
+                    "{:<3} | {:<6} | {:<9} | 0x{:016x}",
+                    t.id, t.parent_id, state_str, t.memory_root
+                );
+            }
+        }
         "echo" => {
             let payload = &args[1..];
             for (i, word) in payload.iter().enumerate() {
@@ -142,26 +132,56 @@ fn run_command(uart: &mut Uart, line: &str, history: &[String], ramdisk: &Option
         "history" => {
             let _ = writeln!(uart, "--- Command History Log ---");
             for (index, logged_cmd) in history.iter().enumerate() {
-                let _ = writeln!(uart, "  {}: {}", index + 1, logged_cmd);
+                let _ = writeln!(uart, " {}: {}", index + 1, logged_cmd);
             }
         }
         "memstat" => {
             let _ = writeln!(uart, "--- Memory System Architecture ---");
             let _ = writeln!(uart, " Heap Location Range : 0x150000 -> 0x1F0000");
-            let _ = writeln!(uart, " Heap Arena Budget   : 640 KiB Active Managed Space");
-            let _ = writeln!(uart, " Alloc Engine Speed  : Hardened Hardware Bit-Scanning O(1)");
+            let _ = writeln!(uart, " Heap Arena Budget : 640 KiB Active Managed Space");
+            let _ = writeln!(uart, " Alloc Engine Speed : Hardened Hardware Bit-Scanning O(1)");
+            match crate::memory::vmm_alloc_frame() {
+                Some(addr) => {
+                    let _ = writeln!(uart, " Physical Frame Alloc: 0x{:08x} (demo allocation)", addr);
+                }
+                None => {
+                    let _ = writeln!(uart, " Physical Frame Alloc: frame pool exhausted");
+                }
+            }
         }
         "panic" => {
-            panic!("shell-triggered test panic");
+            let _ = write!(uart, "Trigger test panic? (y/N): ");
+            let response = uart.read_byte();
+            uart.write_byte(response);
+            let _ = writeln!(uart);
+            if response == b'y' || response == b'Y' {
+                panic!("shell-triggered test panic");
+            } else {
+                let _ = writeln!(uart, "Aborted.");
+            }
+        }
+        "rxtest" => {
+            let _ = writeln!(uart, "Listening for one byte (bounded poll, bypasses IRQ queue)...");
+            match uart.try_read_byte() {
+                Ok(b) => {
+                    let _ = writeln!(uart, "Got byte: 0x{:02X}", b);
+                }
+                Err(UartError::Timeout) => {
+                    let _ = writeln!(uart, "Timed out waiting for input.");
+                }
+                Err(UartError::LineError) => {
+                    let _ = writeln!(uart, "Line error (framing/parity/overrun) detected and discarded.");
+                }
+            }
         }
         "ls" => {
             if let Some(fs) = ramdisk {
                 let _ = writeln!(uart, "--- Ramdisk Contents ---");
                 for file in fs.files() {
                     if file.is_file() {
-                        let _ = writeln!(uart, "  [{:06} bytes] {}", file.size, file.name);
+                        let _ = writeln!(uart, " [{:06} bytes] {}", file.size, file.name);
                     } else if file.is_dir() {
-                        let _ = writeln!(uart, "  [  DIR   ] {}/", file.name);
+                        let _ = writeln!(uart, " [ DIR ] {}/", file.name);
                     }
                 }
             } else {
@@ -173,14 +193,11 @@ fn run_command(uart: &mut Uart, line: &str, history: &[String], ramdisk: &Option
                 let _ = writeln!(uart, "Usage: cat <file>");
                 return;
             }
-
             let target_file = args[1];
             let vfs = crate::fs::vfs::VFS.lock();
-
             if let Some(node) = vfs.open(target_file) {
                 let meta = node.metadata();
                 let mut buffer = alloc::vec![0u8; meta.size];
-
                 match node.read(0, &mut buffer) {
                     Ok(bytes_read) => {
                         if let Ok(text) = core::str::from_utf8(&buffer[..bytes_read]) {
@@ -195,6 +212,52 @@ fn run_command(uart: &mut Uart, line: &str, history: &[String], ramdisk: &Option
                 }
             } else {
                 let _ = writeln!(uart, "Error: File '{}' not found in VFS.", target_file);
+            }
+        }
+        "stat" => {
+            if args.len() < 2 {
+                let _ = writeln!(uart, "Usage: stat <file>");
+                return;
+            }
+            let target_file = args[1];
+            let vfs = crate::fs::vfs::VFS.lock();
+            if let Some(node) = vfs.open(target_file) {
+                let meta = node.metadata();
+                let kind = match meta.node_type {
+                    crate::fs::NodeType::File => "file",
+                    crate::fs::NodeType::Directory => "directory",
+                };
+                let _ = writeln!(uart, "name: {}", meta.name);
+                let _ = writeln!(uart, "type: {}", kind);
+                let _ = writeln!(uart, "size: {} bytes", meta.size);
+            } else {
+                let _ = writeln!(uart, "Error: '{}' not found in VFS.", target_file);
+            }
+        }
+        "raw" => {
+            if args.len() < 2 {
+                let _ = writeln!(uart, "Usage: raw <file>");
+                return;
+            }
+            if let Some(fs) = ramdisk {
+                if let Some(entry) = fs.find(args[1]) {
+                    if entry.is_file() {
+                        match entry.as_text() {
+                            Some(text) => {
+                                let _ = write!(uart, "{}", text);
+                            }
+                            None => {
+                                let _ = writeln!(uart, "[Binary file, {} bytes]", entry.size);
+                            }
+                        }
+                    } else {
+                        let _ = writeln!(uart, "'{}' is not a regular file.", args[1]);
+                    }
+                } else {
+                    let _ = writeln!(uart, "Error: '{}' not found on ramdisk.", args[1]);
+                }
+            } else {
+                let _ = writeln!(uart, "Error: No ramdisk mounted.");
             }
         }
         _ => {
@@ -242,10 +305,8 @@ fn cmd_uname(uart: &mut Uart) {
         let machine = core::str::from_utf8(&info.machine)
             .unwrap_or("?")
             .trim_matches('\0');
-
         let _ = writeln!(uart, "{sysname} v{version} ({machine})");
     } else {
         let _ = writeln!(uart, "Error executing uname syscall.");
     }
 }
-
