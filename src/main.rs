@@ -170,5 +170,6 @@ extern "C" fn background_worker_2() -> ! {
         let _ = core::fmt::Write::write_str(&mut uart, "[Worker 2: Tick]\n");
         for _ in 0..5_000_000 {
             core::hint::spin_loop();
+                          }
     }
 }
