@@ -84,11 +84,12 @@ fn run_command(uart: &mut Uart, line: &str, history: &[String], ramdisk: &Option
 
     match cmd {
         "help" => {
-            let _ = writeln!(
-                uart,
-                "commands: help, about, uname, echo <text>, history, memstat, panic, ls, cat <file>"
-            );
-        }
+    let _ = writeln!(
+        uart,
+        "commands: help, about, uname, ps, echo <text>, history, memstat, panic, ls, cat <file>"
+    );
+}
+
         "about" => {
             let arch = if cfg!(target_arch = "x86_64") {
                 "x86_64 (Intel/AMD Bare-Metal)"
@@ -107,6 +108,27 @@ fn run_command(uart: &mut Uart, line: &str, history: &[String], ramdisk: &Option
         "uname" => {
             cmd_uname(uart);
         }
+
+        "ps" => {
+    let tasks = crate::task::get_task_list();
+    let _ = writeln!(uart, "--- mitosOS Task Table ---");
+    let _ = writeln!(uart, "ID  | Parent | State     | Memory Root");
+    let _ = writeln!(uart, "----+--------+-----------+-------------------");
+    
+    for t in tasks {
+        let state_str = match t.state {
+            crate::task::TaskState::Ready => "Ready",
+            crate::task::TaskState::Running => "Running",
+            crate::task::TaskState::Terminated => "Terminated",
+        };
+        let _ = writeln!(
+            uart,
+            "{:<3} | {:<6} | {:<9} | 0x{:016x}",
+            t.id, t.parent_id, state_str, t.memory_root
+        );
+    }
+}
+
         "echo" => {
             let payload = &args[1..];
             for (i, word) in payload.iter().enumerate() {
