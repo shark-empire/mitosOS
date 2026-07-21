@@ -46,6 +46,9 @@ pub extern "C" fn kmain() -> ! {
         // it just proves the paging code is correct before anything
         // depends on it.
         vmm_self_test(&mut uart);
+        
+        crate::timer::hardware::init();
+
 
         // 3. Unmask the UART's interrupt line.
         uart.enable_interrupts();
