@@ -1,4 +1,9 @@
-// kernel/src/task.rs
+//! Task management and scheduler for mitosOS.
+
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+const STACK_SIZE: usize = 8192; // Upgraded to 8KB for safety
+const MAX_TASKS: usize = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskState {
@@ -7,76 +12,122 @@ pub enum TaskState {
     Terminated,
 }
 
-#[derive(Clone, Copy)]
+/// Architecture-specific hardware context pushed by exceptions/interrupts.
+/// 
+/// We map the stack frame exactly as the assembly handlers push it.
+/// Stacks grow down, so the first struct field is the lowest memory address.
+#[cfg(target_arch = "x86_64")]
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct TaskContext {
+    // General Purpose Registers (Matches timer_handler_stub push order)
+    r15: usize, r14: usize, r13: usize, r12: usize,
+    r11: usize, r10: usize, r9: usize,  r8: usize,
+    rbp: usize, rdi: usize, rsi: usize, rdx: usize,
+    rcx: usize, rbx: usize, rax: usize,
+    // CPU-pushed iretq frame
+    rip: usize, cs: usize, rflags: usize, rsp: usize, ss: usize,
+}
+
+#[cfg(target_arch = "aarch64")]
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct TaskContext {
+    // Matches the 272-byte exception_vector_table layout
+    regs: [usize; 31], // x0 through x30
+    spsr: usize,       // Saved Program Status Register
+    elr: usize,        // Exception Link Register (Entry point)
+    _pad: usize,       // 16-byte alignment padding
+}
+
+/// A 16-byte aligned stack wrapper
+#[repr(C, align(16))]
+struct TaskStack([u8; STACK_SIZE]);
+
 pub struct Task {
     pub id: usize,
-    pub rsp: usize, // Saved Stack Pointer
+    pub sp: usize, // Universal Stack Pointer naming
     pub state: TaskState,
-    // Each task gets a dedicated 4KB stack in BSS memory
-    stack: [u8; 4096], 
+    stack: TaskStack,
 }
 
 impl Task {
-    const fn empty() -> Self {
+    pub const fn empty() -> Self {
         Self {
             id: 0,
-            rsp: 0,
+            sp: 0,
             state: TaskState::Terminated,
-            stack: [0; 4096],
+            stack: TaskStack([0; STACK_SIZE]),
         }
+    }
+
+    /// Initializes the stack frame and registers for a new task.
+    pub fn init(&mut self, id: usize, entry: extern "C" fn() -> !) {
+        self.id = id;
+        self.state = TaskState::Ready;
+
+        let stack_top = self.stack.0.as_ptr() as usize + STACK_SIZE;
+        
+        // Ensure 16-byte alignment mandated by both x86_64 ABI and ARM64 AAPCS
+        let aligned_top = stack_top & !0xF;
+
+        // Overlay our typed Context struct at the top of the new stack
+        let frame_ptr = (aligned_top - core::mem::size_of::<TaskContext>()) as *mut TaskContext;
+
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            frame_ptr.write(TaskContext {
+                r15: 0, r14: 0, r13: 0, r12: 0,
+                r11: 0, r10: 0, r9: 0,  r8: 0,
+                rbp: 0, rdi: 0, rsi: 0, rdx: 0,
+                rcx: 0, rbx: 0, rax: 0,
+                rip: entry as usize,
+                cs: 0x08,              // Kernel Code Segment
+                rflags: 0x202,         // Interrupts Enabled (IF bit 9)
+                rsp: stack_top,
+                ss: 0x10,              // Kernel Data Segment
+            });
+        }
+
+        #[cfg(target_arch = "aarch64")]
+        unsafe {
+            frame_ptr.write(TaskContext {
+                regs: [0; 31],
+                spsr: 0x05,            // EL1h mode with interrupts unmasked
+                elr: entry as usize,   // Entry point execution
+                _pad: 0,
+            });
+        }
+
+        self.sp = frame_ptr as usize;
     }
 }
 
-// Max 4 concurrent tasks for now
+// ==========================================
+// Kernel Scheduler State
+// ==========================================
 
-const MAX_TASKS: usize = 4;
-static mut TASKS: [Task; MAX_TASKS] = [const { Task::empty() }; MAX_TASKS];
+static mut TASKS: [Task; MAX_TASKS] = [
+    Task::empty(), Task::empty(), Task::empty(), Task::empty(),
+];
 
-static mut CURRENT_TASK: usize = 0;
-static mut TASK_INITIALIZED: bool = false;
-
+static CURRENT_TASK: AtomicUsize = AtomicUsize::new(0);
+static TASK_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 /// Prepares a new task with its own stack and initial entry point function.
-pub unsafe fn spawn(entry_point: extern "C" fn() -> !) -> bool {
+pub fn spawn(entry_point: extern "C" fn() -> !) -> bool {
     unsafe {
         for i in 0..MAX_TASKS {
             if TASKS[i].state == TaskState::Terminated {
-                let task = &mut TASKS[i];
-                task.id = i;
-                task.state = TaskState::Ready;
+                TASKS[i].init(i, entry_point);
 
-                // Point to the top of the 4KB stack (stacks grow downwards in x86_64)
-                let stack_top = task.stack.as_ptr() as usize + task.stack.len();
-                
-                // Align stack to 16 bytes as required by the x86_64 ABI
-                let mut sp = stack_top & !0xF;
-
-                // We simulate what the CPU push sequence looks like during an interrupt,
-                // so when `timer_handler_stub` executes `iretq`, it seamlessly jumps into 
-                // our new task's entry point!
-                
-                // 1. Alignment dummy or padding if needed, then fake register pushes 
-                // matching the exact order in `timer_handler_stub`:
-                // r15, r14, r13, r12, r11, r10, r9, r8, rbp, rdi, rsi, rdx, rcx, rbx, rax
-                for _ in 0..15 {
-                    sp -= 8;
-                    *(sp as *mut usize) = 0;
-                }
-
-                // Push fake stack frame for iretq: RIP, CS, RFLAGS, RSP, SS
-                sp -= 8; *(sp as *mut usize) = 0x10; // SS (Data Segment)
-                sp -= 8; *(sp as *mut usize) = sp + 32; // RSP placeholder
-                sp -= 8; *(sp as *mut usize) = 0x202; // RFLAGS (Interrupts enabled bit set)
-                sp -= 8; *(sp as *mut usize) = 0x08; // CS (Code Segment)
-                sp -= 8; *(sp as *mut usize) = entry_point as usize; // RIP (Function entry)
-
-                task.rsp = sp;
-                
-                if !TASK_INITIALIZED {
-                    // Task 0 is whatever is currently running (the main kernel/shell)
+                // If this is the first task spawned, lock the current thread 
+                // (main kernel loop) as Task 0 so it isn't orphaned.
+                if !TASK_INITIALIZED.load(Ordering::Acquire) {
                     TASKS[0].state = TaskState::Running;
-                    TASK_INITIALIZED = true;
+                    TASK_INITIALIZED.store(true, Ordering::Release);
                 }
+                
                 return true;
             }
         }
@@ -86,32 +137,37 @@ pub unsafe fn spawn(entry_point: extern "C" fn() -> !) -> bool {
 
 /// The core scheduling logic called by interrupts.rs on every timer tick.
 #[unsafe(no_mangle)]
-pub extern "C" fn run_schedule(current_rsp: usize) -> usize {
+pub extern "C" fn run_schedule(current_sp: usize) -> usize {
+    if !TASK_INITIALIZED.load(Ordering::Relaxed) {
+        return current_sp;
+    }
+
     unsafe {
-        if !TASK_INITIALIZED {
-            return current_rsp;
+        let current_idx = CURRENT_TASK.load(Ordering::Relaxed);
+
+        // Save current task's state if it is still running
+        if current_sp != 0 && TASKS[current_idx].state == TaskState::Running {
+            TASKS[current_idx].sp = current_sp;
+            TASKS[current_idx].state = TaskState::Ready;
         }
 
-        // Save current task's stack pointer
-        TASKS[CURRENT_TASK].rsp = current_rsp;
-
         // Simple Round-Robin: Find the next Ready task
-        let mut next_task = CURRENT_TASK;
+        let mut next_idx = current_idx;
         for _ in 0..MAX_TASKS {
-            next_task = (next_task + 1) % MAX_TASKS;
-            if TASKS[next_task].state == TaskState::Ready {
-                break;
+            next_idx = (next_idx + 1) % MAX_TASKS;
+            if TASKS[next_idx].state == TaskState::Ready {
+                TASKS[next_idx].state = TaskState::Running;
+                CURRENT_TASK.store(next_idx, Ordering::Relaxed);
+                
+                return TASKS[next_idx].sp;
             }
         }
 
-        if TASKS[next_task].state == TaskState::Ready {
-            TASKS[CURRENT_TASK].state = TaskState::Ready;
-            CURRENT_TASK = next_task;
-            TASKS[CURRENT_TASK].state = TaskState::Running;
-            return TASKS[CURRENT_TASK].rsp;
+        // Fallback: Stick to the current task if no other tasks are ready
+        if TASKS[current_idx].state == TaskState::Ready {
+            TASKS[current_idx].state = TaskState::Running;
         }
-
-        // Fallback: stick to current task if no other task is ready
-        current_rsp
+        
+        current_sp
     }
 }
