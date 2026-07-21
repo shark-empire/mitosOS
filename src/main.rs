@@ -63,7 +63,10 @@ pub extern "C" fn kmain() -> ! {
     if let Some(tar_fs) = inited {
         let adapter = alloc::sync::Arc::new(crate::fs::tar_adapter::TarFsAdapter::new(tar_fs));
         crate::fs::vfs::VFS.lock().mount("/", adapter);
-        let _ = writeln!(uart, "mitosOS: initrd detected and VFS mounted at /");
+           let _ = writeln!(uart, "mitosOS: ramdisk entries visible to parser:");
+    for f in tar_fs.files() {
+        let _ = writeln!(uart, "  '{}' ({} bytes)", f.name, f.size);
+    }
     } else {
         let _ = writeln!(uart, "mitosOS: WARN - No valid initrd found.");
     }
