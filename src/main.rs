@@ -66,6 +66,7 @@ pub extern "C" fn kmain() -> ! {
 
     // --- Spawn Background Worker Task ---
     crate::task::spawn(background_worker, crate::task::ExecutionMode::SharedThread);
+    crate::task::spawn(background_worker_2, crate::task::ExecutionMode::SharedThread);
 
 
     // --- Start Kernel Shell ---
@@ -98,5 +99,17 @@ fn park() -> ! {
         unsafe {
             core::arch::asm!("msr daifset, #2", "wfe", options(nomem, nostack));
         }
+    }
+}
+
+// Add this function anywhere in src/main.rs
+extern "C" fn background_worker_2() -> ! {
+    loop {
+        let mut uart = unsafe { crate::uart::Uart::init() };
+        let _ = core::fmt::Write::write_str(&mut uart, "[Worker 2: Tick]\n");
+        for _ in 0..200_000 {
+            core::hint::spin_loop();
+        }
+        crate::task::yield_now();
     }
 }
