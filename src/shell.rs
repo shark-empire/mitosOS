@@ -1,7 +1,9 @@
 extern crate alloc;
 
+use crate::ramdisk::TarFileSystem;
+use crate::syscall::SYS_UNAME;
 use crate::uart::Uart;
-use crate::ramdisk::TarFileSystem; // <--- ADDED
+use crate::version::UtsName;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt::Write;
@@ -11,7 +13,6 @@ const DELETE: u8 = 0x7F;
 const CR: u8 = b'\r';
 const LF: u8 = b'\n';
 
-// ADDED: Accept the ramdisk reference
 pub fn run(uart: &mut Uart, ramdisk: Option<TarFileSystem>) -> ! {
     let _ = writeln!(uart, "\nmitosOS shell -- type 'help' for commands.");
 
@@ -21,16 +22,14 @@ pub fn run(uart: &mut Uart, ramdisk: Option<TarFileSystem>) -> ! {
     let _ = write!(uart, "mitosOS> ");
 
     loop {
-        // Mask interrupts before checking — closes the window where a
-        // byte could arrive and get missed between the check and sleep.
+        // Mask interrupts before checking
         #[cfg(target_arch = "x86_64")]
         unsafe { core::arch::asm!("cli", options(nomem, nostack, preserves_flags)) };
         #[cfg(target_arch = "aarch64")]
         unsafe { core::arch::asm!("msr daifset, #2", options(nomem, nostack)) };
 
         if let Some(byte) = crate::interrupts::dequeue_byte() {
-            // Unmask before doing real work — a slow command shouldn't
-            // hold interrupts masked for its whole duration.
+            // Unmask before doing real work
             #[cfg(target_arch = "x86_64")]
             unsafe { core::arch::asm!("sti", options(nomem, nostack, preserves_flags)) };
             #[cfg(target_arch = "aarch64")]
@@ -43,7 +42,6 @@ pub fn run(uart: &mut Uart, ramdisk: Option<TarFileSystem>) -> ! {
 
                     if !trimmed.is_empty() {
                         history.push(String::from(trimmed));
-                        // PASS Ramdisk to the command parser
                         run_command(uart, trimmed, &history, &ramdisk);
                     }
 
@@ -67,10 +65,7 @@ pub fn run(uart: &mut Uart, ramdisk: Option<TarFileSystem>) -> ! {
                 _ => {}
             }
         } else {
-            // sti+hlt (or daifclr+wfe) must be these exact two
-            // instructions back to back — that's what makes "unmask
-            // and sleep" atomic. Splitting into separate asm! calls
-            // would reopen the race condition.
+            // Atomic unmask + sleep
             #[cfg(target_arch = "x86_64")]
             unsafe { core::arch::asm!("sti", "hlt", options(nomem, nostack, preserves_flags)) };
             #[cfg(target_arch = "aarch64")]
@@ -79,7 +74,6 @@ pub fn run(uart: &mut Uart, ramdisk: Option<TarFileSystem>) -> ! {
     }
 }
 
-// ADDED: Accept the ramdisk reference
 fn run_command(uart: &mut Uart, line: &str, history: &[String], ramdisk: &Option<TarFileSystem>) {
     let args: Vec<&str> = line.split_whitespace().collect();
     if args.is_empty() {
@@ -92,7 +86,7 @@ fn run_command(uart: &mut Uart, line: &str, history: &[String], ramdisk: &Option
         "help" => {
             let _ = writeln!(
                 uart,
-                "commands: help, about, echo <text>, history, memstat, panic, ls, cat <file>"
+                "commands: help, about, uname, echo <text>, history, memstat, panic, ls, cat <file>"
             );
         }
         "about" => {
@@ -109,6 +103,9 @@ fn run_command(uart: &mut Uart, line: &str, history: &[String], ramdisk: &Option
                 "mitosOS Phase 1 -- Engine: O(1) Allocator Core | Target: {}",
                 arch
             );
+        }
+        "uname" => {
+            cmd_uname(uart);
         }
         "echo" => {
             let payload = &args[1..];
@@ -135,7 +132,6 @@ fn run_command(uart: &mut Uart, line: &str, history: &[String], ramdisk: &Option
         "panic" => {
             panic!("shell-triggered test panic");
         }
-        // --- ADDED: ls Command ---
         "ls" => {
             if let Some(fs) = ramdisk {
                 let _ = writeln!(uart, "--- Ramdisk Contents ---");
@@ -150,34 +146,80 @@ fn run_command(uart: &mut Uart, line: &str, history: &[String], ramdisk: &Option
                 let _ = writeln!(uart, "Error: No ramdisk mounted.");
             }
         }
-        // --- ADDED: cat Command ---
-   // Inside shell.rs command execution:
-"cat" => {
-    let target_file = args[1];
-    let vfs = crate::fs::vfs::VFS.lock();
-    
-    if let Some(node) = vfs.open(target_file) {
-        let meta = node.metadata();
-        let mut buffer = alloc::vec![0u8; meta.size];
-        
-        match node.read(0, &mut buffer) {
-            Ok(bytes_read) => {
-                if let Ok(text) = core::str::from_utf8(&buffer[..bytes_read]) {
-                    let _ = write!(uart, "{}", text);
-                } else {
-                    let _ = writeln!(uart, "[Binary file, size: {} bytes]", bytes_read);
-                }
+        "cat" => {
+            if args.len() < 2 {
+                let _ = writeln!(uart, "Usage: cat <file>");
+                return;
             }
-            Err(e) => {
-                let _ = writeln!(uart, "Error reading file: {}", e);
+
+            let target_file = args[1];
+            let vfs = crate::fs::vfs::VFS.lock();
+
+            if let Some(node) = vfs.open(target_file) {
+                let meta = node.metadata();
+                let mut buffer = alloc::vec![0u8; meta.size];
+
+                match node.read(0, &mut buffer) {
+                    Ok(bytes_read) => {
+                        if let Ok(text) = core::str::from_utf8(&buffer[..bytes_read]) {
+                            let _ = write!(uart, "{}", text);
+                        } else {
+                            let _ = writeln!(uart, "[Binary file, size: {} bytes]", bytes_read);
+                        }
+                    }
+                    Err(e) => {
+                        let _ = writeln!(uart, "Error reading file: {}", e);
+                    }
+                }
+            } else {
+                let _ = writeln!(uart, "Error: File '{}' not found in VFS.", target_file);
             }
         }
-    } else {
-        let _ = writeln!(uart, "Error: File '{}' not found in VFS.", target_file);
-    }
-}
         _ => {
             let _ = writeln!(uart, "unknown command: {} (try 'help')", cmd);
         }
+    }
+}
+
+/// Executes the `uname` shell command by triggering the SYS_UNAME system call.
+fn cmd_uname(uart: &mut Uart) {
+    let mut info = UtsName::new();
+    let ptr = &mut info as *mut UtsName as usize;
+    let res: usize;
+
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        core::arch::asm!(
+            "int 0x80",
+            in("rax") SYS_UNAME,
+            in("rbx") ptr,
+            lateout("rax") res,
+        );
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            in("x8") SYS_UNAME,
+            in("x0") ptr,
+            lateout("x0") res,
+        );
+    }
+
+    if res == 0 {
+        let sysname = core::str::from_utf8(&info.sysname)
+            .unwrap_or("?")
+            .trim_matches('\0');
+        let version = core::str::from_utf8(&info.version)
+            .unwrap_or("?")
+            .trim_matches('\0');
+        let machine = core::str::from_utf8(&info.machine)
+            .unwrap_or("?")
+            .trim_matches('\0');
+
+        let _ = writeln!(uart, "{sysname} v{version} ({machine})");
+    } else {
+        let _ = writeln!(uart, "Error executing uname syscall.");
     }
 }
