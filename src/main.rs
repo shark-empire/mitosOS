@@ -11,6 +11,7 @@ mod ramdisk; // <--- ADDED: Ramdisk module
 mod shell;
 mod uart;
 mod fs;
+pub mod task;
 
 use core::fmt::Write;
 use core::panic::PanicInfo;
