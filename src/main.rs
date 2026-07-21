@@ -69,38 +69,44 @@ pub extern "C" fn kmain() -> ! {
     }
     
     // Example of how to use your new ELF loader:
-    // --- Test Loading an ELF Binary (Level 4 Demo) ---
-    
-            // --- Test Loading an ELF Binary (Level 4 Demo) ---
+    // --- Test Loading an ELF Binary (Level 
+        // --- Test Loading an ELF Binary (Level 4 Demo) ---
     {
-        // 1. Allocate process page table (returns Option<usize>)
-        if let Some(process_root) = unsafe { create_process_page_table() } {
+        // 1. Use the absolute path to memory::create_process_page_table
+        if let Some(process_root) = unsafe { crate::memory::create_process_page_table() } {
             
             // 2. Look up the binary using the VFS `open` method
             let file_node_opt = crate::fs::vfs::VFS.lock().open("/bin/test_program");
             
             if let Some(node) = file_node_opt {
-                // 3. Read the file contents from the FileNode trait
+                // 3. Read the file contents (FileNode::read takes offset: usize, buf: &mut [u8]) -> Result<usize, &str>
                 let mut buffer = alloc::vec![0; 4096];
-                let bytes_read = node.read(&mut buffer);
                 
-                if bytes_read > 0 {
-                    match crate::elf::load_elf_to_process(&buffer[0..bytes_read], process_root) {
-                        Ok(entry_point) => {
-                            let _ = writeln!(uart, "mitosOS: ELF loaded successfully at entry {:#x}", entry_point);
-                        }
-                        Err(e) => {
-                            let _ = writeln!(uart, "mitosOS: ELF load error: {}", e);
+                // Pass offset 0 as the first argument, and handle the Result<usize, &str>
+                match node.read(0, &mut buffer) {
+                    Ok(bytes_read) if bytes_read > 0 => {
+                        match crate::elf::load_elf_to_process(&buffer[0..bytes_read], process_root) {
+                            Ok(entry_point) => {
+                                let _ = writeln!(uart, "mitosOS: ELF loaded successfully at entry {:#x}", entry_point);
+                            }
+                            Err(e) => {
+                                let _ = writeln!(uart, "mitosOS: ELF load error: {}", e);
+                            }
                         }
                     }
-                } else {
-                    let _ = writeln!(uart, "mitosOS: ELF file found, but it was empty.");
+                    Ok(_) => {
+                        let _ = writeln!(uart, "mitosOS: ELF file found, but it was empty.");
+                    }
+                    Err(err) => {
+                        let _ = writeln!(uart, "mitosOS: Failed to read ELF file: {}", err);
+                    }
                 }
             } else {
                 let _ = writeln!(uart, "mitosOS: /bin/test_program not found in VFS.");
             }
         }
     }
+
 
     
 
