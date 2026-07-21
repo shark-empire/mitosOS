@@ -190,9 +190,12 @@ fn cmd_uname(uart: &mut Uart) {
     #[cfg(target_arch = "x86_64")]
     unsafe {
         core::arch::asm!(
+            "push rbx",
+            "mov rbx, {ptr_reg}",
             "int 0x80",
+            "pop rbx",
+            ptr_reg = in(reg) ptr,
             in("rax") SYS_UNAME,
-            in("rbx") ptr,
             lateout("rax") res,
         );
     }
@@ -223,3 +226,4 @@ fn cmd_uname(uart: &mut Uart) {
         let _ = writeln!(uart, "Error executing uname syscall.");
     }
 }
+
