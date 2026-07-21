@@ -110,19 +110,13 @@ impl Task {
         self.parent_id = if mode == ExecutionMode::SharedThread { id } else { id };
         self.state = TaskState::Ready;
 
-            self.memory_root = match mode {
+                self.memory_root = match mode {
             ExecutionMode::SharedThread => parent_memory_root,
             ExecutionMode::IsolatedProcess => {
-                // Allocate a fresh hardware page table root for process isolation
-                /// Allocates or clones a new page table root structure for isolated processes.
-fn allocate_isolated_page_table(parent_root: usize) -> usize {
-    unsafe {
-        crate::memory::create_process_page_table().unwrap_or(parent_root)
-    }
-}
-
+                allocate_isolated_page_table(parent_memory_root)
             }
         };
+
 
 
         let stack_top = self.stack.0.as_ptr() as usize + STACK_SIZE;
