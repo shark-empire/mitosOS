@@ -81,7 +81,7 @@ fn run_command(uart: &mut Uart, line: &str, history: &[String], ramdisk: &Option
         "help" => {
             let _ = writeln!(
                 uart,
-                "commands: help, about, uname, ps, echo <text>, history, memstat, panic, ls, cat <file>, stat <file>, raw <file>, rxtest"
+                "commands: help, about, uname, ps, echo <text>, history, memstat, panic, ls, cat <file>, stat <file>, raw <file>, rxtest, diskread <lba> [count]"
             );
         }
         "about" => {
@@ -172,6 +172,66 @@ fn run_command(uart: &mut Uart, line: &str, history: &[String], ramdisk: &Option
                 Err(UartError::LineError) => {
                     let _ = writeln!(uart, "Line error (framing/parity/overrun) detected and discarded.");
                 }
+            }
+        }
+        "diskread" => {
+            #[cfg(target_arch = "x86_64")]
+            {
+                if args.len() < 2 {
+                    let _ = writeln!(uart, "Usage: diskread <lba> [count]");
+                    return;
+                }
+                let lba: u32 = match args[1].parse() {
+                    Ok(n) => n,
+                    Err(_) => {
+                        let _ = writeln!(uart, "Invalid LBA: '{}'", args[1]);
+                        return;
+                    }
+                };
+                let count: u32 = if args.len() >= 3 {
+                    match args[2].parse() {
+                        Ok(n) => n,
+                        Err(_) => {
+                            let _ = writeln!(uart, "Invalid sector count: '{}'", args[2]);
+                            return;
+                        }
+                    }
+                } else {
+                    1
+                };
+                if count == 0 || count > 64 {
+                    let _ = writeln!(uart, "count must be between 1 and 64 sectors (kept small: 640 KiB heap)");
+                    return;
+                }
+
+                let mut buf = alloc::vec![0u8; count as usize * 512];
+                match crate::fs::ata::read_sectors(lba, count, &mut buf) {
+                    Ok(()) => {
+                        let _ = writeln!(uart, "--- LBA {} .. {} (first 32 bytes) ---", lba, lba + count - 1);
+                        for chunk in buf[..32.min(buf.len())].chunks(16) {
+                            for b in chunk {
+                                let _ = write!(uart, "{:02x} ", b);
+                            }
+                            let _ = writeln!(uart);
+                        }
+                        if buf.len() >= 512 {
+                            let sig = u16::from_le_bytes([buf[510], buf[511]]);
+                            let _ = writeln!(
+                                uart,
+                                "sector 0 boot signature: 0x{:04x} ({})",
+                                sig,
+                                if sig == 0xAA55 { "valid" } else { "not a boot sector" }
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        let _ = writeln!(uart, "ATA read error: {:?}", e);
+                    }
+                }
+            }
+            #[cfg(not(target_arch = "x86_64"))]
+            {
+                let _ = writeln!(uart, "diskread is only available on x86_64 (ATA PIO driver).");
             }
         }
         "ls" => {
