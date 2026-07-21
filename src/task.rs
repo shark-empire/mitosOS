@@ -267,12 +267,13 @@ pub fn spawn(entry_point: extern "C" fn() -> !, mode: ExecutionMode) -> bool {
 }
 
 /// Allocates or clones a new page table root structure for isolated processes.
+/// Allocates or clones a new page table root structure for isolated processes.
 fn allocate_isolated_page_table(parent_root: usize) -> usize {
-    // Production hook: In a full virtual memory manager, this duplicates 
-    // kernel mapping entries and assigns a new root frame. 
-    // For now, we return a derived isolated table reference marker:
-    parent_root + 0x1000 
+    unsafe {
+        crate::memory::create_process_page_table().unwrap_or(parent_root)
+    }
 }
+
 
 
 
