@@ -67,7 +67,9 @@ impl<T> Drop for SpinlockGuard<'_, T> {
         
         // Restore previous CPU interrupt state
         if self.saved_interrupt_state {
-            crate::interrupts::enable_cpu_interrupts();
+           unsafe{
+               crate::interrupts::enable_cpu_interrupts();
+                 }
         }
     }
 }
