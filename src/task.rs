@@ -153,6 +153,23 @@ pub fn spawn(entry_point: extern "C" fn() -> !) -> bool {
     false
 }
 
+/// Terminate the currently running task and yield control back to the scheduler.
+pub fn exit() -> ! {
+    unsafe {
+        let current_idx = CURRENT_TASK.load(Ordering::Relaxed);
+        TASKS[current_idx].state = TaskState::Terminated;
+    }
+
+    // Force an immediate context switch / yield to run the next task
+    yield_now();
+
+    // If the scheduler ever returns back here, loop infinitely
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
+
 /// The core scheduling logic called by interrupts.rs on every timer tick.
 #[unsafe(no_mangle)]
 pub extern "C" fn run_schedule(current_sp: usize) -> usize {
