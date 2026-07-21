@@ -60,6 +60,20 @@ impl Task {
             stack: TaskStack([0; STACK_SIZE]),
         }
     }
+    /// Voluntarily yield the remaining CPU timeslice to the next ready task.
+pub fn yield_now() {
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        core::arch::asm!("int 0x20", options(nomem, nostack));
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        // Trigger a software interrupt yield trap
+        core::arch::asm!("svc #0", options(nomem, nostack));
+    }
+}
+
 
     /// Initializes the stack frame and registers for a new task.
     pub fn init(&mut self, id: usize, entry: extern "C" fn() -> !) {
