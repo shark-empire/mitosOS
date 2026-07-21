@@ -4,6 +4,7 @@
 //! isolated processes and shared-memory threads natively.
 
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use alloc::vec::Vec;
 
 const STACK_SIZE: usize = 8192; // 8KB stack per task
 const MAX_TASKS: usize = 4;
