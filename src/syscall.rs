@@ -16,13 +16,11 @@ pub const SYS_EXIT: usize = 60;
 pub extern "C" fn syscall_handler(sys_num: usize, arg1: usize, arg2: usize, arg3: usize) -> usize {
     match sys_num {
         SYS_WRITE => {
-            // arg1: fd, arg2: buffer pointer, arg3: len
             let fd = arg1;
             let ptr = arg2 as *const u8;
             let len = arg3;
 
             if fd == 1 || fd == 2 {
-                // Stdout / Stderr -> write to UART
                 if !ptr.is_null() && len > 0 {
                     let slice = unsafe { core::slice::from_raw_parts(ptr, len) };
                     let mut uart = unsafe { crate::uart::Uart::init() };
@@ -30,16 +28,14 @@ pub extern "C" fn syscall_handler(sys_num: usize, arg1: usize, arg2: usize, arg3
                     return len;
                 }
             }
-            usize::MAX // Error
+            usize::MAX
         }
         SYS_READ => {
-            // arg1: fd, arg2: buffer pointer, arg3: len
             let fd = arg1;
             let ptr = arg2 as *mut u8;
             let len = arg3;
 
             if fd == 0 {
-                // Stdin -> read from keyboard buffer
                 if !ptr.is_null() && len > 0 {
                     let slice = unsafe { core::slice::from_raw_parts_mut(ptr, len) };
                     let mut bytes_read = 0;
@@ -57,9 +53,9 @@ pub extern "C" fn syscall_handler(sys_num: usize, arg1: usize, arg2: usize, arg3
             usize::MAX
         }
         SYS_EXIT => {
-            // arg1: exit code
-            let _exit_code = arg1;
-            crate::task::exit();
+            let exit_code = arg1;
+            crate::task::exit(); 
+            exit_code
         }
         _ => {
             let mut uart = unsafe { crate::uart::Uart::init() };
