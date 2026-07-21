@@ -12,6 +12,8 @@ mod ramdisk;
 mod shell;
 pub mod task;
 mod uart;
+pub mod sync;
+
 
 use core::fmt::Write;
 use core::panic::PanicInfo;
