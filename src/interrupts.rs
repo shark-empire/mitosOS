@@ -83,7 +83,7 @@ mod imp {
         }
 
         // Re-arm the AArch64 generic timer on each tick
-        super::reload_timer();
+      unsafe{super::reload_timer()};
     }
 }
 
