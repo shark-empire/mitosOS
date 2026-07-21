@@ -110,6 +110,7 @@ fn run_command(uart: &mut Uart, line: &str, history: &[String], ramdisk: &Option
                 let state_str = match t.state {
                     crate::task::TaskState::Ready => "Ready",
                     crate::task::TaskState::Running => "Running",
+                    crate::task::TaskState::Blocked => "Blocked", 
                     crate::task::TaskState::Terminated => "Terminated",
                 };
                 let _ = writeln!(
