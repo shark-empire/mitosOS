@@ -7,6 +7,7 @@ pub enum TaskState {
     Terminated,
 }
 
+#[derive(Clone, Copy)]
 pub struct Task {
     pub id: usize,
     pub rsp: usize, // Saved Stack Pointer
@@ -34,7 +35,7 @@ static mut TASKS: [Task; MAX_TASKS] = [const { Task::empty() }; MAX_TASKS];
 static mut CURRENT_TASK: usize = 0;
 static mut TASK_INITIALIZED: bool = false;
 
-#[derive(Clone, Copy)]
+
 /// Prepares a new task with its own stack and initial entry point function.
 pub unsafe fn spawn(entry_point: extern "C" fn() -> !) -> bool {
     unsafe {
