@@ -90,7 +90,7 @@ mod imp {
 #[cfg(target_arch = "aarch64")]
 pub unsafe fn init_aarch64_timer() {
     let interval: u64 = 50_000_000; 
-    
+    unsafe {
     core::arch::asm!(
         "msr cntp_tval_el0, {0}",
         "mov x1, #1",
@@ -99,13 +99,14 @@ pub unsafe fn init_aarch64_timer() {
         out("x1") _,
         options(nomem, nostack)
     );
+    } 
 }
 
 #[cfg(target_arch = "aarch64")]
 pub unsafe fn init_gic_timer_irq() {
     const GICD_BASE: usize = 0x08000000;
     const GICC_BASE: usize = 0x08010000;
-
+unsafe {
     let gicd_ctlr = GICD_BASE as *mut u32;
     gicd_ctlr.write_volatile(1);
 
@@ -120,16 +121,19 @@ pub unsafe fn init_gic_timer_irq() {
 
     let gicc_pmr = (GICC_BASE + 0x04) as *mut u32;
     gicc_pmr.write_volatile(0xFF);
+  }
 }
 
 #[cfg(target_arch = "aarch64")]
 pub unsafe fn reload_timer() {
     let interval: u64 = 50_000_000;
+   unsafe {
     core::arch::asm!(
         "msr cntp_tval_el0, {0}",
         in(reg) interval,
         options(nomem, nostack)
     );
+   }
 }
 
 // ==========================================
