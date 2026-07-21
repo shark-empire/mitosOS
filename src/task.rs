@@ -228,7 +228,7 @@ pub struct TaskInfo {
 pub fn get_task_list() -> Vec<TaskInfo> {
     let mut list = Vec::new();
     unsafe {
-        for task in TASKS.iter() {
+           for task in (*core::ptr::addr_of!(TASKS)).iter() {
             if task.state != TaskState::Terminated {
                 list.push(TaskInfo {
                     id: task.id,
