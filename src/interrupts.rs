@@ -39,7 +39,7 @@ pub fn dequeue_byte() -> Option<u8> {
 /// Shared Cross-Architecture Scheduler Hook called by Assembly IRQ Handlers
 #[unsafe(no_mangle)]
 pub extern "C" fn schedule(current_sp: usize) -> usize {
-    crate::task::run_scheduler(current_sp)
+    crate::task::run_schedule(current_sp)
 }
 
 // ==========================================
