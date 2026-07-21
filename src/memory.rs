@@ -222,3 +222,35 @@ pub unsafe fn init_memory_subsystem(heap_start: usize, heap_size: usize) {
         HEAP_ALLOCATOR.lock().init(heap_start, heap_size);
     }
 }
+
+/// Creates a new, isolated page table for a user process.
+/// It allocates a fresh root frame and copies the kernel's mappings 
+/// into it so the kernel remains accessible during system calls.
+pub unsafe fn create_process_page_table() -> Option<usize> {
+    // 1. Allocate a fresh physical frame for the new root table
+    let root_frame = crate::memory::vmm_alloc_frame()?;
+    
+    // 2. Zero out the entire frame to ensure no garbage mappings exist
+    core::ptr::write_bytes(root_frame as *mut u8, 0, 4096);
+    
+    // 3. Copy the kernel's mappings into the new table.
+    // On x86_64, the kernel typically lives in the top half of memory.
+    // The top half of the PML4 table is the last 256 entries (out of 512).
+    // (For AArch64 using TTBR1_EL1 for kernel and TTBR0_EL0 for user, 
+    // you just allocate a fresh TTBR0 and don't need to copy).
+    #[cfg(target_arch = "x86_64")]
+    {
+        let current_cr3: usize;
+        core::arch::asm!("mov {}, cr3", out(reg) current_cr3, options(nomem, nostack));
+        let active_root = (current_cr3 & !0xFFF) as *const u64;
+        let new_root = root_frame as *mut u64;
+        
+        // Copy the upper 256 entries (kernel space) from the active table
+        for i in 256..512 {
+            new_root.add(i).write(active_root.add(i).read());
+        }
+    }
+    
+    Some(root_frame)
+}
+
