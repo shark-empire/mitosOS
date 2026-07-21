@@ -2,6 +2,8 @@
 //! Zero-allocation implementation designed for bare-metal environments.
 
 use core::str;
+const RAW_TAR: &[u8] = include_bytes!("../../rootfs.tar");
+
 
 // =========================================================================
 // 1. USTAR (Tar) Header Definition
