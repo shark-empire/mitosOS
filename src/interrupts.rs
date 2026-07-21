@@ -1,6 +1,7 @@
 //! Interrupt and Exception Management engine for mitosOS.
 //! Abstracts the x86_64 Interrupt Descriptor Table (IDT) and the 
 //! aarch64 Exception Vector Table behind a unified system interface.
+
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 const BUFFER_SIZE: usize = 128;
@@ -80,7 +81,55 @@ mod imp {
             // Clear the interrupt flags
             core::ptr::write_volatile(uart_icr as *mut u32, 0x7FF);
         }
+
+        // Re-arm the AArch64 generic timer on each tick
+        super::reload_timer();
     }
+}
+
+#[cfg(target_arch = "aarch64")]
+pub unsafe fn init_aarch64_timer() {
+    let interval: u64 = 50_000_000; 
+    
+    core::arch::asm!(
+        "msr cntp_tval_el0, {0}",
+        "mov x1, #1",
+        "msr cntp_ctl_el0, x1", 
+        in(reg) interval,
+        out("x1") _,
+        options(nomem, nostack)
+    );
+}
+
+#[cfg(target_arch = "aarch64")]
+pub unsafe fn init_gic_timer_irq() {
+    const GICD_BASE: usize = 0x08000000;
+    const GICC_BASE: usize = 0x08010000;
+
+    let gicd_ctlr = GICD_BASE as *mut u32;
+    gicd_ctlr.write_volatile(1);
+
+    let gicd_ipriority = (GICD_BASE + 0x41e) as *mut u8;
+    gicd_ipriority.write_volatile(0); 
+
+    let gicd_isenable = (GICD_BASE + 0x104) as *mut u32;
+    gicd_isenable.write_volatile(1 << 30);
+
+    let gicc_ctlr = GICC_BASE as *mut u32;
+    gicc_ctlr.write_volatile(1);
+
+    let gicc_pmr = (GICC_BASE + 0x04) as *mut u32;
+    gicc_pmr.write_volatile(0xFF);
+}
+
+#[cfg(target_arch = "aarch64")]
+pub unsafe fn reload_timer() {
+    let interval: u64 = 50_000_000;
+    core::arch::asm!(
+        "msr cntp_tval_el0, {0}",
+        in(reg) interval,
+        options(nomem, nostack)
+    );
 }
 
 // ==========================================
@@ -195,7 +244,7 @@ mod imp {
                 options(readonly, nostack, preserves_flags)
             );
         }
-    }
+    } 
 
     #[unsafe(no_mangle)]
     pub extern "C" fn raw_uart_interrupt_handler() {
@@ -295,10 +344,8 @@ core::arch::global_asm!(
       .balign 128
       
       // --- IRQ Handler Vector Slot ---
-      // 1. Allocate 272 bytes on the stack for task context (16-byte aligned)
       sub sp, sp, #272
 
-      // 2. Save registers x0-x29 and x30
       stp x0, x1, [sp, #0]
       stp x2, x3, [sp, #16]
       stp x4, x5, [sp, #32]
@@ -316,27 +363,21 @@ core::arch::global_asm!(
       stp x28, x29, [sp, #224]
       str x30, [sp, #240]
 
-      // 3. Save SPSR_EL1 and ELR_EL1
       mrs x0, spsr_el1
       mrs x1, elr_el1
       stp x0, x1, [sp, #248]
 
-      // 4. Handle Hardware Devices (UART RX, etc.)
       bl handle_irq
 
-      // 5. Pass current SP as 1st argument (x0) to schedule()
       mov x0, sp
       bl schedule
 
-      // 6. Set SP to the next task's SP returned in x0
       mov sp, x0
 
-      // 7. Restore SPSR_EL1 and ELR_EL1
       ldp x0, x1, [sp, #248]
       msr spsr_el1, x0
       msr elr_el1, x1
 
-      // 8. Restore registers x0-x30
       ldp x0, x1, [sp, #0]
       ldp x2, x3, [sp, #16]
       ldp x4, x5, [sp, #32]
@@ -392,6 +433,12 @@ core::arch::global_asm!(
 pub fn init() {
     unsafe {
         imp::init();
+
+        #[cfg(target_arch = "aarch64")]
+        {
+            init_gic_timer_irq();
+            init_aarch64_timer();
+        }
     }
 }
 
