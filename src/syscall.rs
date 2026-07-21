@@ -1,9 +1,7 @@
 //! System Call Dispatcher layer for mitosOS.
-//!
-//! Handles incoming system calls dispatched from architecture-specific interrupt
-//! and trap handlers (`int 0x80` on x86_64 and `svc` on AArch64).
 
 use core::fmt::Write;
+use crate::version::UtsName;
 
 // =========================================================================
 // System Call Numbers
@@ -11,21 +9,12 @@ use core::fmt::Write;
 pub const SYS_READ: usize = 0;
 pub const SYS_WRITE: usize = 1;
 pub const SYS_EXIT: usize = 60;
+pub const SYS_UNAME: usize = 63;
 
 // =========================================================================
 // Central Dispatcher
 // =========================================================================
 
-/// Main entry point for system calls.
-///
-/// # Arguments
-/// * `sys_num` - The system call ID passed in register `rax` (x86_64) or `x8` (AArch64).
-/// * `arg1` - First argument (e.g., file descriptor or exit code).
-/// * `arg2` - Second argument (e.g., memory buffer address).
-/// * `arg3` - Third argument (e.g., byte length).
-///
-/// # Returns
-/// Returns an operation result, byte count, or `usize::MAX` on failure.
 #[unsafe(no_mangle)]
 pub extern "C" fn syscall_handler(
     sys_num: usize,
@@ -37,6 +26,7 @@ pub extern "C" fn syscall_handler(
         SYS_WRITE => sys_write(arg1, arg2 as *const u8, arg3),
         SYS_READ => sys_read(arg1, arg2 as *mut u8, arg3),
         SYS_EXIT => sys_exit(arg1),
+        SYS_UNAME => sys_uname(arg1 as *mut UtsName),
         _ => sys_unknown(sys_num),
     }
 }
@@ -51,7 +41,6 @@ fn sys_write(fd: usize, ptr: *const u8, len: usize) -> usize {
         return usize::MAX;
     }
 
-    // Safety: Verify pointer is non-null before slicing
     let slice = unsafe { core::slice::from_raw_parts(ptr, len) };
     let mut uart = unsafe { crate::uart::Uart::init() };
 
@@ -69,7 +58,6 @@ fn sys_read(fd: usize, ptr: *mut u8, len: usize) -> usize {
         return usize::MAX;
     }
 
-    // Safety: Buffer pointer is verified non-null
     let slice = unsafe { core::slice::from_raw_parts_mut(ptr, len) };
     let mut bytes_read = 0;
 
@@ -85,10 +73,20 @@ fn sys_read(fd: usize, ptr: *mut u8, len: usize) -> usize {
     bytes_read
 }
 
+/// Populates system information metadata into the provided `UtsName` buffer pointer.
+fn sys_uname(ptr: *mut UtsName) -> usize {
+    if ptr.is_null() {
+        return usize::MAX;
+    }
+
+    // Safety: Verify pointer is non-null before writing
+    let uts = unsafe { &mut *ptr };
+    uts.populate();
+
+    0 // Success
+}
+
 /// Terminates the current execution task.
-///
-/// Returns `!` (never) to explicitly signal to the compiler that control
-/// flow will not return to the caller.
 fn sys_exit(_exit_code: usize) -> ! {
     crate::task::exit();
 }
