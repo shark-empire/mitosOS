@@ -65,7 +65,8 @@ pub extern "C" fn kmain() -> ! {
     }
 
     // --- Spawn Background Worker Task ---
-    crate::task::spawn(background_worker);
+    crate::task::spawn(background_worker, crate::task::ExecutionMode::SharedThread);
+
 
     // --- Start Kernel Shell ---
     shell::run(&mut uart, inited);
