@@ -10,7 +10,7 @@ static TAIL: AtomicUsize = AtomicUsize::new(0);
 
 /// Pushes a byte into the buffer (Called by Interrupt Handlers)
 pub fn enqueue_byte(byte: u8) {
-    let current_tail = TAIL.load(Ordering::Relaxed); // Only producer modifies TAIL
+    let current_tail = TAIL.load(Ordering::Relaxed);
     let next_tail = (current_tail + 1) % BUFFER_SIZE;
     
     if next_tail != HEAD.load(Ordering::Acquire) {
@@ -23,10 +23,10 @@ pub fn enqueue_byte(byte: u8) {
 
 /// Pulls a byte out of the buffer (Called by the Shell)
 pub fn dequeue_byte() -> Option<u8> {
-    let current_head = HEAD.load(Ordering::Relaxed); // Only consumer modifies HEAD
+    let current_head = HEAD.load(Ordering::Relaxed);
     
     if current_head == TAIL.load(Ordering::Acquire) {
-        None // Buffer is empty
+        None
     } else {
         unsafe {
             let byte = (*&raw mut INPUT_BUFFER)[current_head];
@@ -34,6 +34,12 @@ pub fn dequeue_byte() -> Option<u8> {
             Some(byte)
         }
     }
+}
+
+/// Shared Cross-Architecture Scheduler Hook called by Assembly IRQ Handlers
+#[unsafe(no_mangle)]
+pub extern "C" fn schedule(current_sp: usize) -> usize {
+    crate::task::run_scheduler(current_sp)
 }
 
 // ==========================================
@@ -55,9 +61,6 @@ mod imp {
                 in(reg) table_ptr,
                 options(nostack, nomem)
             );
-            
-            // Note: CPU unmasking (daifclr) was removed from here. 
-            // It is now explicitly handled by enable_cpu_interrupts() in main.rs.
         }
     }
 
@@ -68,13 +71,13 @@ mod imp {
         let uart_icr: usize = uart_dr + 0x44;         
 
         unsafe {
-            // Drain the hardware RX FIFO completely so we don't miss characters.
+            // Drain the hardware RX FIFO completely
             while (core::ptr::read_volatile(uart_fr as *const u32) & (1 << 4)) == 0 {
                 let byte = core::ptr::read_volatile(uart_dr as *mut u32) as u8;
                 super::enqueue_byte(byte);
             }
 
-            // Clear the interrupt flags after the FIFO is fully cleared
+            // Clear the interrupt flags
             core::ptr::write_volatile(uart_icr as *mut u32, 0x7FF);
         }
     }
@@ -85,7 +88,6 @@ mod imp {
 // ==========================================
 #[cfg(target_arch = "x86_64")]
 mod imp {
-    /// Definition of a standard x86_64 IDT Gate Descriptor (16 bytes)
     #[derive(Copy, Clone)]
     #[repr(C, packed)]
     struct IdtEntry {
@@ -159,17 +161,13 @@ mod imp {
     }
 
     unsafe fn init_pit() {
-        let divisor: u16 = 11931; // 1.193182 MHz / 11931 ~= 100 Hz
+        let divisor: u16 = 11931; // ~100 Hz
         unsafe {
-            // Send Command: Channel 0, Access Lobyte/Hibyte, Mode 3 (Square Wave)
             pic_outb(0x43, 0x36);
-            // Send Low Byte of divisor
             pic_outb(0x40, (divisor & 0xFF) as u8);
-            // Send High Byte of divisor
             pic_outb(0x40, (divisor >> 8) as u8);
         }
     }
-
 
     pub unsafe fn init() {
         unsafe {
@@ -179,8 +177,6 @@ mod imp {
             IDT.entries[3].set_handler(exception_handler_stub as *const () as usize);
             IDT.entries[0x20].set_handler(timer_handler_stub as *const () as usize);
             IDT.entries[0x24].set_handler(uart_handler_stub as *const () as usize);
-             
-            
 
             #[repr(C, packed)]
             struct IdtPointer {
@@ -198,22 +194,8 @@ mod imp {
                 in(reg) &idt_ptr,
                 options(readonly, nostack, preserves_flags)
             );
-
-            // Note: CPU unmasking (sti) was removed from here. 
-            // It is now explicitly handled by enable_cpu_interrupts() in main.rs.
         }
     }
-#[unsafe(no_mangle)]
-    pub extern "C" fn schedule(current_rsp: usize) -> usize {
-        // Right now, we only have ONE task running (the main kernel shell).
-        // So we just return the exact same stack pointer we were given.
-        // Once we create a Task Queue, we will save `current_rsp` and return `next_task.rsp`.
-        
-    
-            crate::task::run_schedule(current_rsp) 
-         
-    }
-
 
     #[unsafe(no_mangle)]
     pub extern "C" fn raw_uart_interrupt_handler() {
@@ -250,9 +232,7 @@ mod imp {
     }
 
     #[unsafe(no_mangle)]
-    pub extern "C" fn generic_exception_handler() {
-        // Fallback catch loop
-    }
+    pub extern "C" fn generic_exception_handler() {}
 }
 
 // ==========================================
@@ -266,96 +246,25 @@ core::arch::global_asm!(
     .global timer_handler_stub
     
     exception_handler_stub:
-      push rax
-      push rcx
-      push rdx
-      push rsi
-      push rdi
-      push r8
-      push r9
-      push r10
-      push r11
+      push rax; push rcx; push rdx; push rsi; push rdi; push r8; push r9; push r10; push r11
       call generic_exception_handler
-      pop r11
-      pop r10
-      pop r9
-      pop r8
-      pop rdi
-      pop rsi
-      pop rdx
-      pop rcx
-      pop rax
+      pop r11; pop r10; pop r9; pop r8; pop rdi; pop rsi; pop rdx; pop rcx; pop rax
       iretq
 
     uart_handler_stub:
-      push rax
-      push rcx
-      push rdx
-      push rsi
-      push rdi
-      push r8
-      push r9
-      push r10
-      push r11
+      push rax; push rcx; push rdx; push rsi; push rdi; push r8; push r9; push r10; push r11
       call raw_uart_interrupt_handler
-      pop r11
-      pop r10
-      pop r9
-      pop r8
-      pop rdi
-      pop rsi
-      pop rdx
-      pop rcx
-      pop rax
+      pop r11; pop r10; pop r9; pop r8; pop rdi; pop rsi; pop rdx; pop rcx; pop rax
       iretq
 
-     timer_handler_stub:
-      // The CPU has already pushed: SS, RSP, RFLAGS, CS, RIP
-      push rax
-      push rbx
-      push rcx
-      push rdx
-      push rsi
-      push rdi
-      push rbp
-      push r8
-      push r9
-      push r10
-      push r11
-      push r12
-      push r13
-      push r14
-      push r15
-
-      // 1. Pass the current stack pointer (RSP) to our Rust scheduler as the first argument (RDI)
+    timer_handler_stub:
+      push rax; push rbx; push rcx; push rdx; push rsi; push rdi; push rbp; push r8; push r9; push r10; push r11; push r12; push r13; push r14; push r15
       mov rdi, rsp
       call schedule
-
-      // 2. The Rust scheduler returns the new task's stack pointer in RAX. Update RSP!
       mov rsp, rax
-
-      // 3. Acknowledge the interrupt to the Master PIC (Port 0x20)
       mov al, 0x20
       out 0x20, al
-
-      // 4. Pop the new task's registers
-      pop r15
-      pop r14
-      pop r13
-      pop r12
-      pop r11
-      pop r10
-      pop r9
-      pop r8
-      pop rbp
-      pop rdi
-      pop rsi
-      pop rdx
-      pop rcx
-      pop rbx
-      pop rax
-      
-      // 5. Jump into the new task
+      pop r15; pop r14; pop r13; pop r12; pop r11; pop r10; pop r9; pop r8; pop rbp; pop rdi; pop rsi; pop rdx; pop rcx; pop rbx; pop rax
       iretq
     "#
 );
@@ -385,8 +294,11 @@ core::arch::global_asm!(
       b .
       .balign 128
       
-      // IRQ Handler Vector Slot:
-      sub sp, sp, #160
+      // --- IRQ Handler Vector Slot ---
+      // 1. Allocate 272 bytes on the stack for task context (16-byte aligned)
+      sub sp, sp, #272
+
+      // 2. Save registers x0-x29 and x30
       stp x0, x1, [sp, #0]
       stp x2, x3, [sp, #16]
       stp x4, x5, [sp, #32]
@@ -396,10 +308,35 @@ core::arch::global_asm!(
       stp x12, x13, [sp, #96]
       stp x14, x15, [sp, #112]
       stp x16, x17, [sp, #128]
-      stp x18, x30, [sp, #144]
+      stp x18, x19, [sp, #144]
+      stp x20, x21, [sp, #160]
+      stp x22, x23, [sp, #176]
+      stp x24, x25, [sp, #192]
+      stp x26, x27, [sp, #208]
+      stp x28, x29, [sp, #224]
+      str x30, [sp, #240]
 
+      // 3. Save SPSR_EL1 and ELR_EL1
+      mrs x0, spsr_el1
+      mrs x1, elr_el1
+      stp x0, x1, [sp, #248]
+
+      // 4. Handle Hardware Devices (UART RX, etc.)
       bl handle_irq
 
+      // 5. Pass current SP as 1st argument (x0) to schedule()
+      mov x0, sp
+      bl schedule
+
+      // 6. Set SP to the next task's SP returned in x0
+      mov sp, x0
+
+      // 7. Restore SPSR_EL1 and ELR_EL1
+      ldp x0, x1, [sp, #248]
+      msr spsr_el1, x0
+      msr elr_el1, x1
+
+      // 8. Restore registers x0-x30
       ldp x0, x1, [sp, #0]
       ldp x2, x3, [sp, #16]
       ldp x4, x5, [sp, #32]
@@ -409,8 +346,15 @@ core::arch::global_asm!(
       ldp x12, x13, [sp, #96]
       ldp x14, x15, [sp, #112]
       ldp x16, x17, [sp, #128]
-      ldp x18, x30, [sp, #144]
-      add sp, sp, #160
+      ldp x18, x19, [sp, #144]
+      ldp x20, x21, [sp, #160]
+      ldp x22, x23, [sp, #176]
+      ldp x24, x25, [sp, #192]
+      ldp x26, x27, [sp, #208]
+      ldp x28, x29, [sp, #224]
+      ldr x30, [sp, #240]
+
+      add sp, sp, #272
       eret
       .balign 128
       
@@ -445,16 +389,12 @@ core::arch::global_asm!(
 // Public Interface Methods
 // ==========================================
 
-/// Exposed unified initialization hook called directly by `main.rs`
 pub fn init() {
     unsafe {
         imp::init();
     }
 }
 
-/// Unmasks interrupts at the CPU level, allowing the processor to 
-/// receive hardware interrupt signals. This should be called after
-/// IDTs and controller configurations are safely loaded.
 #[inline(always)]
 pub unsafe fn enable_cpu_interrupts() {
     #[cfg(target_arch = "x86_64")]
