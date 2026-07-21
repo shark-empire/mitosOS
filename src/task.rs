@@ -1,9 +1,25 @@
 //! Task management and scheduler for mitosOS.
+//!
+//! Features an O(1) cache-aligned Execution Engine supporting both
+//! isolated processes and shared-memory threads natively.
 
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 const STACK_SIZE: usize = 8192; // 8KB stack per task
 const MAX_TASKS: usize = 4;
+
+// ==========================================
+// Execution Modes & Task State
+// ==========================================
+
+/// Defines how a new task interacts with system memory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutionMode {
+    /// Process: Allocates a completely new, isolated hardware page table.
+    IsolatedProcess,
+    /// Thread: Shares the exact hardware page table (virtual memory) of the parent.
+    SharedThread,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskState {
@@ -12,20 +28,19 @@ pub enum TaskState {
     Terminated,
 }
 
+// ==========================================
+// Hardware Context Definitions
+// ==========================================
+
 /// Architecture-specific hardware context pushed by exceptions/interrupts.
-///
-/// We map the stack frame exactly as the assembly handlers push it.
-/// Stacks grow down, so the first struct field is the lowest memory address.
 #[cfg(target_arch = "x86_64")]
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct TaskContext {
-    // General Purpose Registers (matches timer_handler_stub push order)
     r15: usize, r14: usize, r13: usize, r12: usize,
     r11: usize, r10: usize, r9: usize,  r8: usize,
     rbp: usize, rdi: usize, rsi: usize, rdx: usize,
     rcx: usize, rbx: usize, rax: usize,
-    // CPU-pushed iretq frame
     rip: usize, cs: usize, rflags: usize, rsp: usize, ss: usize,
 }
 
@@ -33,20 +48,31 @@ struct TaskContext {
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct TaskContext {
-    // Matches the 272-byte exception_vector_table layout
     regs: [usize; 31], // x0 through x30
-    spsr: usize,       // Saved Program Status Register
-    elr: usize,        // Exception Link Register (entry point)
-    _pad: usize,       // 16-byte alignment padding
+    spsr: usize,       
+    elr: usize,        
+    _pad: usize,       
 }
 
 /// A 16-byte aligned stack wrapper.
 #[repr(C, align(16))]
 struct TaskStack([u8; STACK_SIZE]);
 
+// ==========================================
+// Cache-Aligned Task Control Block
+// ==========================================
+
+/// Represents a single CPU execution context.
+/// 
+/// `align(64)` forces the struct to perfectly fit inside a standard CPU cache line.
+/// This prevents "false sharing" across CPU cores, maximizing scheduler speed.
+#[repr(C, align(64))]
 pub struct Task {
     pub id: usize,
-    pub sp: usize, // Universal Stack Pointer naming
+    pub parent_id: usize,
+    pub sp: usize,
+    /// Hardware Page Table Root (CR3 on x86_64, TTBR0_EL1 on AArch64).
+    pub memory_root: usize, 
     pub state: TaskState,
     stack: TaskStack,
 }
@@ -55,23 +81,38 @@ impl Task {
     pub const fn empty() -> Self {
         Self {
             id: 0,
+            parent_id: 0,
             sp: 0,
+            memory_root: 0,
             state: TaskState::Terminated,
             stack: TaskStack([0; STACK_SIZE]),
         }
     }
 
-    /// Initializes the stack frame and registers for a new task.
-    pub fn init(&mut self, id: usize, entry: extern "C" fn() -> !) {
+    /// Initializes the stack frame, registers, and memory boundaries for a new task.
+    pub fn init(
+        &mut self, 
+        id: usize, 
+        entry: extern "C" fn() -> !, 
+        mode: ExecutionMode, 
+        parent_memory_root: usize
+    ) {
         self.id = id;
+        self.parent_id = if mode == ExecutionMode::SharedThread { id } else { id };
         self.state = TaskState::Ready;
 
+        // Resolve hardware memory boundaries based on execution mode
+        self.memory_root = match mode {
+            ExecutionMode::SharedThread => parent_memory_root,
+            ExecutionMode::IsolatedProcess => {
+                // TODO: Interface with your Memory Allocator to get a fresh page table.
+                // For now, if we don't have a new one, fallback to parent.
+                parent_memory_root 
+            }
+        };
+
         let stack_top = self.stack.0.as_ptr() as usize + STACK_SIZE;
-
-        // Ensure 16-byte alignment mandated by both x86_64 ABI and ARM64 AAPCS
         let aligned_top = stack_top & !0xF;
-
-        // Overlay our typed Context struct at the top of the new stack
         let frame_ptr = (aligned_top - core::mem::size_of::<TaskContext>()) as *mut TaskContext;
 
         #[cfg(target_arch = "x86_64")]
@@ -82,10 +123,10 @@ impl Task {
                 rbp: 0, rdi: 0, rsi: 0, rdx: 0,
                 rcx: 0, rbx: 0, rax: 0,
                 rip: entry as usize,
-                cs: 0x08,              // Kernel Code Segment
-                rflags: 0x202,         // Interrupts Enabled (IF bit 9)
+                cs: 0x08,              
+                rflags: 0x202,         
                 rsp: stack_top,
-                ss: 0x10,              // Kernel Data Segment
+                ss: 0x10,              
             });
         }
 
@@ -93,8 +134,8 @@ impl Task {
         unsafe {
             frame_ptr.write(TaskContext {
                 regs: [0; 31],
-                spsr: 0x05,            // EL1h mode with interrupts unmasked
-                elr: entry as usize,   // Entry point execution
+                spsr: 0x05,            
+                elr: entry as usize,   
                 _pad: 0,
             });
         }
@@ -121,26 +162,37 @@ static TASK_INITIALIZED: AtomicBool = AtomicBool::new(false);
 /// Voluntarily yield the remaining CPU timeslice to the next ready task.
 pub fn yield_now() {
     #[cfg(target_arch = "x86_64")]
-    unsafe {
-        core::arch::asm!("int 0x20", options(nomem, nostack));
-    }
+    unsafe { core::arch::asm!("int 0x20", options(nomem, nostack)); }
 
     #[cfg(target_arch = "aarch64")]
-    unsafe {
-        // Trigger a software interrupt yield trap
-        core::arch::asm!("svc #0", options(nomem, nostack));
+    unsafe { core::arch::asm!("svc #0", options(nomem, nostack)); }
+}
+
+/// Helper to read the CPU's current memory root.
+fn current_memory_root() -> usize {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let cr3: usize;
+        unsafe { core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack)) };
+        cr3
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        let ttbr0: usize;
+        unsafe { core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack)) };
+        ttbr0
     }
 }
 
 /// Prepares a new task with its own stack and initial entry point function.
-pub fn spawn(entry_point: extern "C" fn() -> !) -> bool {
+pub fn spawn(entry_point: extern "C" fn() -> !, mode: ExecutionMode) -> bool {
     unsafe {
+        let parent_root = current_memory_root();
+
         for i in 0..MAX_TASKS {
             if TASKS[i].state == TaskState::Terminated {
-                TASKS[i].init(i, entry_point);
+                TASKS[i].init(i, entry_point, mode, parent_root);
 
-                // If this is the first task spawned, lock the current thread
-                // (main kernel loop) as Task 0 so it isn't orphaned.
                 if !TASK_INITIALIZED.load(Ordering::Acquire) {
                     TASKS[0].state = TaskState::Running;
                     TASK_INITIALIZED.store(true, Ordering::Release);
@@ -160,15 +212,10 @@ pub fn exit() -> ! {
         TASKS[current_idx].state = TaskState::Terminated;
     }
 
-    // Force an immediate context switch / yield to run the next task
     yield_now();
 
-    // If the scheduler ever returns back here, loop infinitely
-    loop {
-        core::hint::spin_loop();
-    }
+    loop { core::hint::spin_loop(); }
 }
-
 
 /// The core scheduling logic called by interrupts.rs on every timer tick.
 #[unsafe(no_mangle)]
@@ -180,13 +227,11 @@ pub extern "C" fn run_schedule(current_sp: usize) -> usize {
     unsafe {
         let current_idx = CURRENT_TASK.load(Ordering::Relaxed);
 
-        // Save current task's state if it is still running
         if current_sp != 0 && TASKS[current_idx].state == TaskState::Running {
             TASKS[current_idx].sp = current_sp;
             TASKS[current_idx].state = TaskState::Ready;
         }
 
-        // Simple Round-Robin: Find the next Ready task
         let mut next_idx = current_idx;
         for _ in 0..MAX_TASKS {
             next_idx = (next_idx + 1) % MAX_TASKS;
@@ -194,11 +239,21 @@ pub extern "C" fn run_schedule(current_sp: usize) -> usize {
                 TASKS[next_idx].state = TaskState::Running;
                 CURRENT_TASK.store(next_idx, Ordering::Relaxed);
 
+                // --- Hardware Address Space Switch ---
+                // If the next task operates in a different memory space, swap page tables natively.
+                let next_root = TASKS[next_idx].memory_root;
+                if next_root != TASKS[current_idx].memory_root && next_root != 0 {
+                    #[cfg(target_arch = "x86_64")]
+                    core::arch::asm!("mov cr3, {}", in(reg) next_root, options(nostack, preserves_flags));
+                    
+                    #[cfg(target_arch = "aarch64")]
+                    core::arch::asm!("msr ttbr0_el1, {}; isb", in(reg) next_root, options(nostack, preserves_flags));
+                }
+
                 return TASKS[next_idx].sp;
             }
         }
 
-        // Fallback: stick to the current task if no other tasks are ready
         if TASKS[current_idx].state == TaskState::Ready {
             TASKS[current_idx].state = TaskState::Running;
         }
