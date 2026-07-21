@@ -209,9 +209,9 @@ mod imp {
         // So we just return the exact same stack pointer we were given.
         // Once we create a Task Queue, we will save `current_rsp` and return `next_task.rsp`.
         
-        unsafe {
+    
             crate::task::schedule(current_rsp) 
-         }
+         
     }
 
 
