@@ -26,7 +26,7 @@ pub const SYS_EXIT: usize = 60;
 ///
 /// # Returns
 /// Returns an operation result, byte count, or `usize::MAX` on failure.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn syscall_handler(
     sys_num: usize,
     arg1: usize,
