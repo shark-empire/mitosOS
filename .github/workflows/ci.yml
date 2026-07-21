@@ -38,6 +38,13 @@ jobs:
           rustup target add ${{ matrix.target }}
           rustup component add llvm-tools-preview
 
+      # --- ADDED: Create rootfs.tar before building ARM kernel ---
+      - name: Create ramdisk (ARM only)
+        if: matrix.target == 'aarch64-unknown-none'
+        run: |
+          echo "Hello from mitosOS in-memory filesystem!" > test.txt
+          tar -cf rootfs.tar test.txt
+
       - name: Build kernel (ARM only)
         if: matrix.target == 'aarch64-unknown-none'
         run: cargo build --release --target ${{ matrix.target }}
