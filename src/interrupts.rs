@@ -187,6 +187,7 @@ mod imp {
         fn exception_handler_stub();
         fn uart_handler_stub();
         fn timer_handler_stub();
+        fn syscall_handler_stub();
     }
 
     unsafe fn pic_outb(port: u16, value: u8) {
@@ -290,6 +291,7 @@ mod imp {
     pub extern "C" fn generic_exception_handler() {}
 }
 
+
 // ==========================================
 // Low-Level x86_64 Assembly Wrappers
 // ==========================================
@@ -299,6 +301,7 @@ core::arch::global_asm!(
     .global exception_handler_stub
     .global uart_handler_stub
     .global timer_handler_stub
+    .global syscall_handler_stub
     
     exception_handler_stub:
       push rax; push rcx; push rdx; push rsi; push rdi; push r8; push r9; push r10; push r11
@@ -321,10 +324,7 @@ core::arch::global_asm!(
       out 0x20, al
       pop r15; pop r14; pop r13; pop r12; pop r11; pop r10; pop r9; pop r8; pop rbp; pop rdi; pop rsi; pop rdx; pop rcx; pop rbx; pop rax
       iretq
-    #[cfg(target_arch = "x86_64")]
-core::arch::global_asm!(
-    r#"
-    .global syscall_handler_stub
+
     syscall_handler_stub:
       push rax; push rcx; push rdx; push rsi; push rdi; push r8; push r9; push r10; push r11
       // Pass registers: rax (syscall num) -> rdi, rbx -> rsi, rcx -> rdx, rdx -> rcx
@@ -335,10 +335,9 @@ core::arch::global_asm!(
       call syscall_handler
       pop r11; pop r10; pop r9; pop r8; pop rdi; pop rsi; pop rdx; pop rcx; pop rax
       iretq
-
-    
     "#
 );
+
 
 // ==========================================
 // Low-Level AArch64 Exception Vector Table
