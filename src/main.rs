@@ -14,6 +14,8 @@ pub mod task;
 mod uart;
 pub mod sync;
 pub mod syscall;
+pub mod version;
+
 
 
 
