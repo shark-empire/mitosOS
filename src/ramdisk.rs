@@ -130,10 +130,19 @@ impl TarFileSystem {
         }
     }
 
+    
+
     /// Performs an O(n) scan to find a file by an exact name match.
     pub fn find(&self, target_name: &str) -> Option<FileEntry> {
         self.files().find(|entry| entry.name == target_name)
     }
+
+    pub fn new_embedded() -> Option<Self> {
+        let ptr = RAW_TAR.as_ptr() as usize;
+        let size = RAW_TAR.len();
+     unsafe { Self::new(ptr, size) }
+    }
+
 }
 
 // =========================================================================
