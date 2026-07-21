@@ -56,11 +56,29 @@ let inited: Option<ramdisk::TarFileSystem> = unsafe {
     } else {
         let _ = writeln!(uart, "mitosOS: no valid initrd found at target address.");
     }
+
+    unsafe {
+    crate::task::spawn(background_worker);
+}
+
     // -------------------------------------
 
     // Pass the initrd to the shell
     shell::run(&mut uart, inited);
 }
+
+// Somewhere in your main.rs or a background worker module:
+unsafe extern "C" fn background_worker() -> ! {
+    loop {
+        // You can write a tiny UART print or loop here to prove it's running
+        // e.g., printing a dot or ticker every time it cycles
+        for _ in 0..10000000 {unsafe{
+            core::hint::spin_loop()};
+        }
+    }
+}
+
+
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
