@@ -67,6 +67,23 @@ pub extern "C" fn kmain() -> ! {
     } else {
         let _ = writeln!(uart, "mitosOS: WARN - No valid initrd found.");
     }
+    
+    // Example of how to use your new ELF loader:
+if let Some(file_data) = crate::fs::vfs::VFS.lock().read_file("/bin/test_program") {
+    if let Ok(process_root) = unsafe { crate::memory::create_process_page_table() } {
+        match crate::elf::load_elf_to_process(&file_data, process_root) {
+            Ok(entry_point) => {
+                let mut uart = unsafe { crate::uart::Uart::init() };
+                let _ = writeln!(uart, "ELF loaded successfully! Entry point: {:#x}", entry_point);
+            }
+            Err(e) => {
+                let mut uart = unsafe { crate::uart::Uart::init() };
+                let _ = writeln!(uart, "Failed to load ELF: {}", e);
+            }
+        }
+    }
+}
+
 
     // --- Spawn Background Worker Tasks ---
     // Spawn these FIRST so the scheduler has something to swap to.
