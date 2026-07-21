@@ -72,8 +72,8 @@ extern "C" fn background_worker() -> ! {
     loop {
         // You can write a tiny UART print or loop here to prove it's running
         // e.g., printing a dot or ticker every time it cycles
-        for _ in 0..10000000 {unsafe{
-            core::hint::spin_loop()};
+        for _ in 0..10000000 {
+            core::hint::spin_loop();
         }
     }
 }
