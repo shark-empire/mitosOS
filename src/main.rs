@@ -13,6 +13,8 @@ mod shell;
 pub mod task;
 mod uart;
 pub mod sync;
+pub mod syscall;
+
 
 
 use core::fmt::Write;
