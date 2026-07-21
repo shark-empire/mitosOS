@@ -86,7 +86,7 @@ pub unsafe fn spawn(entry_point: extern "C" fn() -> !) -> bool {
 
 /// The core scheduling logic called by interrupts.rs on every timer tick.
 #[unsafe(no_mangle)]
-pub extern "C" fn schedule(current_rsp: usize) -> usize {
+pub extern "C" fn run_schedule(current_rsp: usize) -> usize {
     unsafe {
         if !TASK_INITIALIZED {
             return current_rsp;
