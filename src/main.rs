@@ -17,6 +17,8 @@ pub mod sync;
 pub mod syscall;
 pub mod version;
 pub mod timer;
+mod elf;
+mod fd;
 
 
 use core::fmt::Write;
