@@ -26,9 +26,15 @@ pub enum ExecutionMode {
 pub enum TaskState {
     Ready,
     Running,
+    Blocked,
     Terminated,
 }
-
+/// A standard 32-byte message passed between isolated processes.
+#[derive(Debug, Clone, Copy)]
+pub struct Message {
+    pub sender_id: usize,
+    pub data: [u8; 32],
+}
 // ==========================================
 // Hardware Context Definitions
 // ==========================================
@@ -75,6 +81,7 @@ pub struct Task {
     /// Hardware Page Table Root (CR3 on x86_64, TTBR0_EL1 on AArch64).
     pub memory_root: usize, 
     pub state: TaskState,
+    pub mailbox: Option<Message>, 
     stack: TaskStack,
 }
 
@@ -86,6 +93,7 @@ impl Task {
             sp: 0,
             memory_root: 0,
             state: TaskState::Terminated,
+            mailbox: None,
             stack: TaskStack([0; STACK_SIZE]),
         }
     }
@@ -106,7 +114,13 @@ impl Task {
             ExecutionMode::SharedThread => parent_memory_root,
             ExecutionMode::IsolatedProcess => {
                 // Allocate a fresh hardware page table root for process isolation
-                allocate_isolated_page_table(parent_memory_root)
+                /// Allocates or clones a new page table root structure for isolated processes.
+fn allocate_isolated_page_table(parent_root: usize) -> usize {
+    unsafe {
+        crate::memory::create_process_page_table().unwrap_or(parent_root)
+    }
+}
+
             }
         };
 
@@ -143,6 +157,59 @@ impl Task {
         self.sp = frame_ptr as usize;
     }
 }
+
+/// Gets the ID of the currently executing task.
+pub fn current_task_id() -> usize {
+    CURRENT_TASK.load(Ordering::Relaxed)
+}
+
+/// Sends a message to a destination task and wakes it up if it was asleep.
+pub fn send_message(dest_id: usize, message_data: [u8; 32]) -> Result<(), &'static str> {
+    unsafe {
+        let sender_id = current_task_id();
+        let tasks_ptr = core::ptr::addr_of_mut!(TASKS);
+        
+        for task in (*tasks_ptr).iter_mut() {
+            if task.id == dest_id && task.state != TaskState::Terminated {
+                if task.mailbox.is_some() {
+                    return Err("Destination mailbox is full");
+                }
+                
+                task.mailbox = Some(Message { sender_id, data: message_data });
+                
+                // Wake up the task if it was waiting for a message
+                if task.state == TaskState::Blocked {
+                    task.state = TaskState::Ready;
+                }
+                return Ok(());
+            }
+        }
+    }
+    Err("Destination task not found")
+}
+
+/// Reads a message. If the mailbox is empty, blocks the task until one arrives.
+pub fn receive_message() -> Option<Message> {
+    unsafe {
+        let current_id = current_task_id();
+        let tasks_ptr = core::ptr::addr_of_mut!(TASKS);
+        
+        for task in (*tasks_ptr).iter_mut() {
+            if task.id == current_id {
+                if let Some(msg) = task.mailbox.take() {
+                    return Some(msg);
+                } else {
+                    // Put the task to sleep so the scheduler skips it
+                    task.state = TaskState::Blocked;
+                    crate::task::yield_now(); // Force an immediate context switch
+                    return None;
+                }
+            }
+        }
+    }
+    None
+}
+
 
 // ==========================================
 // Kernel Scheduler State
