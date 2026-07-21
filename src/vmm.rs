@@ -39,7 +39,7 @@ pub mod arch {
             if flags.execute_disable {
                 raw |= 1 << 63;
             }
-            self.0 = raw;
+            self.0 = raw as u64;
         }
     }
 
@@ -134,7 +134,7 @@ pub mod arch {
             if flags.execute_disable {
                 raw |= (1 << 53) | (1 << 54);
             }
-            self.0 = raw;
+            self.0 = raw as u64;
         }
     }
 
