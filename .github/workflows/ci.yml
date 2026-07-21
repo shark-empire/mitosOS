@@ -31,7 +31,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y qemu-system-arm qemu-system-x86 gcc-aarch64-linux-gnu nasm
 
-     - name: Setup Rust Nightly Toolchain
+      - name: Setup Rust Nightly Toolchain
         uses: dtolnay/rust-toolchain@nightly
         with:
           targets: x86_64-unknown-none, aarch64-unknown-none
