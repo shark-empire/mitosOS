@@ -2,7 +2,7 @@
 
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-const STACK_SIZE: usize = 8192; // Upgraded to 8KB for safety
+const STACK_SIZE: usize = 8192; // 8KB stack per task
 const MAX_TASKS: usize = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -13,14 +13,14 @@ pub enum TaskState {
 }
 
 /// Architecture-specific hardware context pushed by exceptions/interrupts.
-/// 
+///
 /// We map the stack frame exactly as the assembly handlers push it.
 /// Stacks grow down, so the first struct field is the lowest memory address.
 #[cfg(target_arch = "x86_64")]
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct TaskContext {
-    // General Purpose Registers (Matches timer_handler_stub push order)
+    // General Purpose Registers (matches timer_handler_stub push order)
     r15: usize, r14: usize, r13: usize, r12: usize,
     r11: usize, r10: usize, r9: usize,  r8: usize,
     rbp: usize, rdi: usize, rsi: usize, rdx: usize,
@@ -36,11 +36,11 @@ struct TaskContext {
     // Matches the 272-byte exception_vector_table layout
     regs: [usize; 31], // x0 through x30
     spsr: usize,       // Saved Program Status Register
-    elr: usize,        // Exception Link Register (Entry point)
+    elr: usize,        // Exception Link Register (entry point)
     _pad: usize,       // 16-byte alignment padding
 }
 
-/// A 16-byte aligned stack wrapper
+/// A 16-byte aligned stack wrapper.
 #[repr(C, align(16))]
 struct TaskStack([u8; STACK_SIZE]);
 
@@ -60,20 +60,6 @@ impl Task {
             stack: TaskStack([0; STACK_SIZE]),
         }
     }
-    /// Voluntarily yield the remaining CPU timeslice to the next ready task.
-pub fn yield_now() {
-    #[cfg(target_arch = "x86_64")]
-    unsafe {
-        core::arch::asm!("int 0x20", options(nomem, nostack));
-    }
-
-    #[cfg(target_arch = "aarch64")]
-    unsafe {
-        // Trigger a software interrupt yield trap
-        core::arch::asm!("svc #0", options(nomem, nostack));
-    }
-}
-
 
     /// Initializes the stack frame and registers for a new task.
     pub fn init(&mut self, id: usize, entry: extern "C" fn() -> !) {
@@ -81,7 +67,7 @@ pub fn yield_now() {
         self.state = TaskState::Ready;
 
         let stack_top = self.stack.0.as_ptr() as usize + STACK_SIZE;
-        
+
         // Ensure 16-byte alignment mandated by both x86_64 ABI and ARM64 AAPCS
         let aligned_top = stack_top & !0xF;
 
@@ -128,6 +114,24 @@ static mut TASKS: [Task; MAX_TASKS] = [
 static CURRENT_TASK: AtomicUsize = AtomicUsize::new(0);
 static TASK_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
+// ==========================================
+// Public Scheduler API
+// ==========================================
+
+/// Voluntarily yield the remaining CPU timeslice to the next ready task.
+pub fn yield_now() {
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        core::arch::asm!("int 0x20", options(nomem, nostack));
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        // Trigger a software interrupt yield trap
+        core::arch::asm!("svc #0", options(nomem, nostack));
+    }
+}
+
 /// Prepares a new task with its own stack and initial entry point function.
 pub fn spawn(entry_point: extern "C" fn() -> !) -> bool {
     unsafe {
@@ -135,13 +139,13 @@ pub fn spawn(entry_point: extern "C" fn() -> !) -> bool {
             if TASKS[i].state == TaskState::Terminated {
                 TASKS[i].init(i, entry_point);
 
-                // If this is the first task spawned, lock the current thread 
+                // If this is the first task spawned, lock the current thread
                 // (main kernel loop) as Task 0 so it isn't orphaned.
                 if !TASK_INITIALIZED.load(Ordering::Acquire) {
                     TASKS[0].state = TaskState::Running;
                     TASK_INITIALIZED.store(true, Ordering::Release);
                 }
-                
+
                 return true;
             }
         }
@@ -172,16 +176,16 @@ pub extern "C" fn run_schedule(current_sp: usize) -> usize {
             if TASKS[next_idx].state == TaskState::Ready {
                 TASKS[next_idx].state = TaskState::Running;
                 CURRENT_TASK.store(next_idx, Ordering::Relaxed);
-                
+
                 return TASKS[next_idx].sp;
             }
         }
 
-        // Fallback: Stick to the current task if no other tasks are ready
+        // Fallback: stick to the current task if no other tasks are ready
         if TASKS[current_idx].state == TaskState::Ready {
             TASKS[current_idx].state = TaskState::Running;
         }
-        
+
         current_sp
     }
 }
