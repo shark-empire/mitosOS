@@ -131,6 +131,7 @@ mod imp {
     unsafe extern "C" {
         fn exception_handler_stub();
         fn uart_handler_stub();
+        fn timer_handler_stub();
     }
 
     unsafe fn pic_outb(port: u16, value: u8) {
@@ -157,12 +158,29 @@ mod imp {
         }
     }
 
+    unsafe fn init_pit() {
+        let divisor: u16 = 11931; // 1.193182 MHz / 11931 ~= 100 Hz
+        unsafe {
+            // Send Command: Channel 0, Access Lobyte/Hibyte, Mode 3 (Square Wave)
+            pic_outb(0x43, 0x36);
+            // Send Low Byte of divisor
+            pic_outb(0x40, (divisor & 0xFF) as u8);
+            // Send High Byte of divisor
+            pic_outb(0x40, (divisor >> 8) as u8);
+        }
+    }
+
+
     pub unsafe fn init() {
         unsafe {
             remap_pic();
+            init_pit();
 
             IDT.entries[3].set_handler(exception_handler_stub as *const () as usize);
+            IDT.entries[0x20].set_handler(timer_handler_stub as *const () as usize);
             IDT.entries[0x24].set_handler(uart_handler_stub as *const () as usize);
+             
+            
 
             #[repr(C, packed)]
             struct IdtPointer {
@@ -185,6 +203,15 @@ mod imp {
             // It is now explicitly handled by enable_cpu_interrupts() in main.rs.
         }
     }
+#[unsafe(no_mangle)]
+    pub extern "C" fn schedule(current_rsp: usize) -> usize {
+        // Right now, we only have ONE task running (the main kernel shell).
+        // So we just return the exact same stack pointer we were given.
+        // Once we create a Task Queue, we will save `current_rsp` and return `next_task.rsp`.
+        
+        current_rsp 
+    }
+
 
     #[unsafe(no_mangle)]
     pub extern "C" fn raw_uart_interrupt_handler() {
@@ -234,6 +261,7 @@ core::arch::global_asm!(
     r#"
     .global exception_handler_stub
     .global uart_handler_stub
+    .global timer_handler_stub
     
     exception_handler_stub:
       push rax
@@ -277,6 +305,55 @@ core::arch::global_asm!(
       pop rdx
       pop rcx
       pop rax
+      iretq
+
+     timer_handler_stub:
+      // The CPU has already pushed: SS, RSP, RFLAGS, CS, RIP
+      push rax
+      push rbx
+      push rcx
+      push rdx
+      push rsi
+      push rdi
+      push rbp
+      push r8
+      push r9
+      push r10
+      push r11
+      push r12
+      push r13
+      push r14
+      push r15
+
+      // 1. Pass the current stack pointer (RSP) to our Rust scheduler as the first argument (RDI)
+      mov rdi, rsp
+      call schedule
+
+      // 2. The Rust scheduler returns the new task's stack pointer in RAX. Update RSP!
+      mov rsp, rax
+
+      // 3. Acknowledge the interrupt to the Master PIC (Port 0x20)
+      mov al, 0x20
+      out 0x20, al
+
+      // 4. Pop the new task's registers
+      pop r15
+      pop r14
+      pop r13
+      pop r12
+      pop r11
+      pop r10
+      pop r9
+      pop r8
+      pop rbp
+      pop rdi
+      pop rsi
+      pop rdx
+      pop rcx
+      pop rbx
+      pop rax
+      
+      // 5. Jump into the new task
       iretq
     "#
 );
