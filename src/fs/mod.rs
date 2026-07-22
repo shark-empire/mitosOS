@@ -9,7 +9,7 @@ pub mod vfs;
 pub mod tar_adapter;
 #[cfg(target_arch = "x86_64")]
 pub mod ata;
-
+pub mod fat32;
 /// The kind of entry a `FileNode` represents.
 pub enum NodeType {
     File,
