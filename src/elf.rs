@@ -132,7 +132,39 @@ unsafe fn map_and_copy_segment(
     vaddr: usize,
     data: &[u8],
     memsz: usize,
-    flags: u32,
+    _flags: u32,
 ) -> Result<(), &'static str> {
-    crate::memory::map_process_segment(page_table_root, vaddr, memsz, flags, data)
+    const PAGE_SIZE: usize = 4096;
+
+    let start_vaddr = vaddr & !(PAGE_SIZE - 1);
+    let end_vaddr = (vaddr + memsz + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+
+    let mut current_vaddr = start_vaddr;
+    let mut data_offset = 0;
+
+    while current_vaddr < end_vaddr {
+        let phys_frame = crate::memory::alloc_frame()
+            .ok_or("Out of memory: failed to allocate frame for ELF segment")?;
+
+        crate::memory::map_page(page_table_root, current_vaddr, phys_frame)?;
+
+        let page_offset = if current_vaddr < vaddr { vaddr - current_vaddr } else { 0 };
+        let copy_start_in_page = page_offset;
+        let bytes_left_in_data = data.len().saturating_sub(data_offset);
+        let bytes_to_copy = core::cmp::min(bytes_left_in_data, PAGE_SIZE - copy_start_in_page);
+
+        if bytes_to_copy > 0 {
+            let dest_ptr = (current_vaddr + copy_start_in_page) as *mut u8;
+            core::ptr::copy_nonoverlapping(
+                data[data_offset..data_offset + bytes_to_copy].as_ptr(),
+                dest_ptr,
+                bytes_to_copy,
+            );
+            data_offset += bytes_to_copy;
+        }
+
+        current_vaddr += PAGE_SIZE;
+    }
+
+    Ok(())
 }
