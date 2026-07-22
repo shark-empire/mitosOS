@@ -534,7 +534,7 @@ pub fn init() {
     }
 }
 
-//! Interrupt and Exception Router for mitosOS.
+/// Interrupt and Exception Router for mitosOS.
 
 #[cfg(target_arch = "x86_64")]
 pub extern "C" fn x86_syscall_trap(frame: &mut crate::task::TaskContext) {
