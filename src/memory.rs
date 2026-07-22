@@ -212,6 +212,7 @@ pub fn alloc_frame() -> Option<usize> {
 }
 
 /// Maps a virtual address to a physical frame in the specified page table root.
+/// Maps a virtual address to a physical frame in the specified page table root.
 pub unsafe fn map_page(page_table_root: usize, vaddr: usize, paddr: usize) -> Result<(), &'static str> {
     #[cfg(target_arch = "x86_64")]
     {
@@ -221,26 +222,30 @@ pub unsafe fn map_page(page_table_root: usize, vaddr: usize, paddr: usize) -> Re
         let pdpt_idx = (vaddr >> 30) & 0x1FF;
         let pd_idx   = (vaddr >> 21) & 0x1FF;
         let pt_idx   = (vaddr >> 12) & 0x1FF;
-
+    
         unsafe fn get_or_create_table(entry: *mut u64) -> Result<*mut u64, &'static str> {
-            let val = entry.read();
-            if (val & 1) != 0 {
-                Ok(((val & !0xFFF) as usize) as *mut u64)
-            } else {
-                let new_frame = vmm_alloc_frame().ok_or("Out of memory: failed to allocate page table frame")?;
-                ptr::write_bytes(new_frame as *mut u8, 0, PAGE_SIZE);
-                entry.write((new_frame as u64) | 0x7); // Present, Writable, User
-                Ok(new_frame as *mut u64)
+            unsafe {
+                let val = entry.read();
+                if (val & 1) != 0 {
+                    Ok(((val & !0xFFF) as usize) as *mut u64)
+                } else {
+                    let new_frame = vmm_alloc_frame().ok_or("Out of memory: failed to allocate page table frame")?;
+                    ptr::write_bytes(new_frame as *mut u8, 0, PAGE_SIZE);
+                    entry.write((new_frame as u64) | 0x7); // Present, Writable, User
+                    Ok(new_frame as *mut u64)
+                }
             }
         }
 
-        let pdpt = get_or_create_table(pml4.add(pml4_idx))?;
-        let pd = get_or_create_table(pdpt.add(pdpt_idx))?;
-        let pt = get_or_create_table(pd.add(pd_idx))?;
+        unsafe {
+            let pdpt = get_or_create_table(pml4.add(pml4_idx))?;
+            let pd = get_or_create_table(pdpt.add(pdpt_idx))?;
+            let pt = get_or_create_table(pd.add(pd_idx))?;
 
-        pt.add(pt_idx).write((paddr as u64) | 0x7); // Present, Writable, User
+            pt.add(pt_idx).write((paddr as u64) | 0x7); // Present, Writable, User
 
-        core::arch::asm!("invlpg [{}]", in(reg) vaddr, options(nostack, preserves_flags));
+            core::arch::asm!("invlpg [{}]", in(reg) vaddr, options(nostack, preserves_flags));
+        }
 
         Ok(())
     }
@@ -251,6 +256,7 @@ pub unsafe fn map_page(page_table_root: usize, vaddr: usize, paddr: usize) -> Re
         Err("map_page not implemented for AArch64")
     }
 }
+
 
 /// Protects boot and kernel memory from being allocated by the VMM
 pub unsafe fn protect_boot_memory(kernel_end_addr: usize) {
