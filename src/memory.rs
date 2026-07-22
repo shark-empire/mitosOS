@@ -1,3 +1,5 @@
+//! Professional Production-Ready Memory Subsystem for mitosOS.
+
 use core::alloc::{GlobalAlloc, Layout};
 use core::cell::UnsafeCell;
 use core::ptr;
@@ -204,6 +206,52 @@ pub fn vmm_alloc_frame() -> Option<usize> {
     PHYSICAL_PMM.lock().allocate_next_frame().map(|idx| idx * PAGE_SIZE)
 }
 
+/// Convenience alias expected by the ELF loader (`crate::memory::alloc_frame`).
+pub fn alloc_frame() -> Option<usize> {
+    vmm_alloc_frame()
+}
+
+/// Maps a virtual address to a physical frame in the specified page table root.
+pub unsafe fn map_page(page_table_root: usize, vaddr: usize, paddr: usize) -> Result<(), &'static str> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let pml4 = page_table_root as *mut u64;
+        
+        let pml4_idx = (vaddr >> 39) & 0x1FF;
+        let pdpt_idx = (vaddr >> 30) & 0x1FF;
+        let pd_idx   = (vaddr >> 21) & 0x1FF;
+        let pt_idx   = (vaddr >> 12) & 0x1FF;
+
+        unsafe fn get_or_create_table(entry: *mut u64) -> Result<*mut u64, &'static str> {
+            let val = entry.read();
+            if (val & 1) != 0 {
+                Ok(((val & !0xFFF) as usize) as *mut u64)
+            } else {
+                let new_frame = vmm_alloc_frame().ok_or("Out of memory: failed to allocate page table frame")?;
+                ptr::write_bytes(new_frame as *mut u8, 0, PAGE_SIZE);
+                entry.write((new_frame as u64) | 0x7); // Present, Writable, User
+                Ok(new_frame as *mut u64)
+            }
+        }
+
+        let pdpt = get_or_create_table(pml4.add(pml4_idx))?;
+        let pd = get_or_create_table(pdpt.add(pdpt_idx))?;
+        let pt = get_or_create_table(pd.add(pd_idx))?;
+
+        pt.add(pt_idx).write((paddr as u64) | 0x7); // Present, Writable, User
+
+        core::arch::asm!("invlpg [{}]", in(reg) vaddr, options(nostack, preserves_flags));
+
+        Ok(())
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        let _ = (page_table_root, vaddr, paddr);
+        Err("map_page not implemented for AArch64")
+    }
+}
+
 /// Protects boot and kernel memory from being allocated by the VMM
 pub unsafe fn protect_boot_memory(kernel_end_addr: usize) {
     let mut pmm = PHYSICAL_PMM.lock();
@@ -216,47 +264,34 @@ pub unsafe fn protect_boot_memory(kernel_end_addr: usize) {
 
 /// Explicit initialization entry point
 pub unsafe fn init_memory_subsystem(heap_start: usize, heap_size: usize) {
-    // Explicit unsafe block required by Rust 2024 edition rules 
-    // even though the surrounding function is marked `unsafe`.
     unsafe {
         HEAP_ALLOCATOR.lock().init(heap_start, heap_size);
     }
 }
 
 /// Creates a new, isolated page table for a user process.
-/// It allocates a fresh root frame and copies the kernel's mappings 
-/// into it so the kernel remains accessible during system calls.
 pub unsafe fn create_process_page_table() -> Option<usize> {
-    // 1. Allocate a fresh physical frame for the new root table
     let root_frame = crate::memory::vmm_alloc_frame()?;
     
-    // 2. Zero out the entire frame to ensure no garbage mappings exist
     unsafe {
-    core::ptr::write_bytes(root_frame as *mut u8, 0, 4096);
-      }
-    // 3. Copy the kernel's mappings into the new table.
-    // On x86_64, the kernel typically lives in the top half of memory.
-    // The top half of the PML4 table is the last 256 entries (out of 512).
-    // (For AArch64 using TTBR1_EL1 for kernel and TTBR0_EL0 for user, 
-    // you just allocate a fresh TTBR0 and don't need to copy).
+        core::ptr::write_bytes(root_frame as *mut u8, 0, 4096);
+    }
+
     #[cfg(target_arch = "x86_64")]
     {
         let current_cr3: usize;
-      unsafe {  
-        core::arch::asm!("mov {}, cr3", out(reg) current_cr3, options(nomem, nostack));
-           }
+        unsafe {  
+            core::arch::asm!("mov {}, cr3", out(reg) current_cr3, options(nomem, nostack));
+        }
         let active_root = (current_cr3 & !0xFFF) as *const u64;
         let new_root = root_frame as *mut u64;
         
-        // Copy the upper 256 entries (kernel space) from the active table
-       unsafe { 
-        for i in 256..512 {
-            new_root.add(i).write(active_root.add(i).read());
-                 }
+        unsafe { 
+            for i in 256..512 {
+                new_root.add(i).write(active_root.add(i).read());
+            }
         }
-    
     }
     
     Some(root_frame)
 }
-
