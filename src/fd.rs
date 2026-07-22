@@ -95,11 +95,12 @@ impl FileDescriptorTable {
         Err(FdError::NoSpace)
     }
 
-    pub fn get(&mut self, fd: usize) -> Result<&mut dyn FileDescriptor + '_, FdError> {
-        self.fds
-            .get_mut(fd)
-            .and_then(|slot| slot.as_mut().map(|boxed| boxed.as_mut()))
-            .ok_or(FdError::BadRequest)
+    pub fn get(&mut self, fd: usize) -> Result<&mut dyn FileDescriptor, FdError> {
+        if let Some(Some(boxed)) = self.fds.get_mut(fd) {
+            Ok(boxed.as_mut())
+        } else {
+            Err(FdError::BadRequest)
+        }
     }
 
     pub fn close(&mut self, fd: usize) -> Result<(), FdError> {
