@@ -534,6 +534,21 @@ pub fn init() {
     }
 }
 
+//! Interrupt and Exception Router for mitosOS.
+
+#[cfg(target_arch = "x86_64")]
+pub extern "C" fn x86_syscall_trap(frame: &mut crate::task::TaskContext) {
+    // On x86_64, syscall arguments are typically passed via registers:
+    // rax = syscall number, rdi = arg1, rsi = arg2, rdx = arg3
+    let sys_num = frame.rax;
+    let arg1 = frame.rdi;
+    let arg2 = frame.rsi;
+    let arg3 = frame.rdx;
+
+    let ret = crate::syscall::syscall_handler(sys_num, arg1, arg2, arg3);
+    frame.rax = ret; // Return value placed back in rax
+}
+
 #[inline(always)]
 pub unsafe fn enable_cpu_interrupts() {
     #[cfg(target_arch = "x86_64")]
