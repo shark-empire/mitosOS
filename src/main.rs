@@ -19,6 +19,8 @@ pub mod version;
 pub mod timer;
 mod elf;
 mod fd;
+pub mod block;
+pub mod graphics;
 
 
 use core::fmt::Write;
