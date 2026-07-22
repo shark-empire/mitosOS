@@ -29,12 +29,14 @@ pub enum TaskState {
     Blocked,
     Terminated,
 }
+
 /// A standard 32-byte message passed between isolated processes.
 #[derive(Debug, Clone, Copy)]
 pub struct Message {
     pub sender_id: usize,
     pub data: [u8; 32],
 }
+
 // ==========================================
 // Hardware Context Definitions
 // ==========================================
@@ -43,22 +45,22 @@ pub struct Message {
 #[cfg(target_arch = "x86_64")]
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
-struct TaskContext {
-    r15: usize, r14: usize, r13: usize, r12: usize,
-    r11: usize, r10: usize, r9: usize,  r8: usize,
-    rbp: usize, rdi: usize, rsi: usize, rdx: usize,
-    rcx: usize, rbx: usize, rax: usize,
-    rip: usize, cs: usize, rflags: usize, rsp: usize, ss: usize,
+pub struct TaskContext {
+    pub r15: usize, pub r14: usize, pub r13: usize, pub r12: usize,
+    pub r11: usize, pub r10: usize, pub r9: usize,  pub r8: usize,
+    pub rbp: usize, pub rdi: usize, pub rsi: usize, pub rdx: usize,
+    pub rcx: usize, pub rbx: usize, pub rax: usize,
+    pub rip: usize, pub cs: usize, pub rflags: usize, pub rsp: usize, pub ss: usize,
 }
 
 #[cfg(target_arch = "aarch64")]
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
-struct TaskContext {
-    regs: [usize; 31], // x0 through x30
-    spsr: usize,       
-    elr: usize,        
-    _pad: usize,       
+pub struct TaskContext {
+    pub regs: [usize; 31], // x0 through x30
+    pub spsr: usize,       
+    pub elr: usize,        
+    pub _pad: usize,       
 }
 
 /// A 16-byte aligned stack wrapper.
@@ -110,14 +112,12 @@ impl Task {
         self.parent_id = if mode == ExecutionMode::SharedThread { id } else { id };
         self.state = TaskState::Ready;
 
-                self.memory_root = match mode {
+        self.memory_root = match mode {
             ExecutionMode::SharedThread => parent_memory_root,
             ExecutionMode::IsolatedProcess => {
                 allocate_isolated_page_table(parent_memory_root)
             }
         };
-
-
 
         let stack_top = self.stack.0.as_ptr() as usize + STACK_SIZE;
         let aligned_top = stack_top & !0xF;
@@ -204,7 +204,6 @@ pub fn receive_message() -> Option<Message> {
     None
 }
 
-
 // ==========================================
 // Kernel Scheduler State
 // ==========================================
@@ -267,17 +266,13 @@ pub fn spawn(entry_point: extern "C" fn() -> !, mode: ExecutionMode) -> bool {
 }
 
 /// Allocates or clones a new page table root structure for isolated processes.
-/// Allocates or clones a new page table root structure for isolated processes.
 fn allocate_isolated_page_table(parent_root: usize) -> usize {
     unsafe {
         crate::memory::create_process_page_table().unwrap_or(parent_root)
     }
 }
 
-
-
-
-// Add this public structure to src/task.rs
+/// Public task metadata structure for diagnostics.
 #[derive(Debug, Clone, Copy)]
 pub struct TaskInfo {
     pub id: usize,
@@ -290,7 +285,7 @@ pub struct TaskInfo {
 pub fn get_task_list() -> Vec<TaskInfo> {
     let mut list = Vec::new();
     unsafe {
-           for task in (*core::ptr::addr_of!(TASKS)).iter() {
+        for task in (*core::ptr::addr_of!(TASKS)).iter() {
             if task.state != TaskState::Terminated {
                 list.push(TaskInfo {
                     id: task.id,
@@ -339,7 +334,6 @@ pub extern "C" fn run_schedule(current_sp: usize) -> usize {
                 CURRENT_TASK.store(next_idx, Ordering::Relaxed);
 
                 // --- Hardware Address Space Switch ---
-                // If the next task operates in a different memory space, swap page tables natively.
                 let next_root = TASKS[next_idx].memory_root;
                 if next_root != TASKS[current_idx].memory_root && next_root != 0 {
                     #[cfg(target_arch = "x86_64")]
