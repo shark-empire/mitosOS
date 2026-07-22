@@ -25,14 +25,23 @@ fi
 truncate -s "$STAGE2_MAX_BYTES" stage2.bin
 
 # =========================================================================
-# MOVED: Create Ramdisk BEFORE building the kernel!
+# Ramdisk contents: assembled BEFORE building the kernel, since aarch64's
+# include_bytes!("../rootfs.tar") needs the file to exist at compile time.
 # =========================================================================
+echo "==> Assembling userspace test_program (static ELF64, no libc)"
+nasm -f elf64 userspace/test_program.s -o test_program.o
+ld -e _start -o test_program test_program.o
+rm -f test_program.o
+
 echo "==> Creating Ramdisk (rootfs.tar)"
-# 1. Create a dummy file for the CI and your shell to find
-echo "Hello from mitosOS in-memory filesystem!" > test.txt
-# 2. Package it into a standard uncompressed tarball
-tar -cf rootfs.tar test.txt
-# 3. Strictly pad the tarball to 128KB so stage2.s doesn't over-read and crash
+rm -rf rootfs
+mkdir -p rootfs/bin
+echo "Hello from mitosOS in-memory filesystem!" > rootfs/test.txt
+cp test_program rootfs/bin/test_program
+# List paths explicitly (not `-C rootfs .`) so entries are named "bin/test_program"
+# and "test.txt" with no leading "./" -- the VFS lookup only strips a leading "/".
+tar -cf rootfs.tar -C rootfs bin/test_program test.txt
+# Strictly pad the tarball to 128KB so stage2.s doesn't over-read and crash
 truncate -s "$RAMDISK_MAX_BYTES" rootfs.tar
 
 echo "==> Building kernel ($KERNEL_TARGET)"
