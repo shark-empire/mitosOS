@@ -36,3 +36,10 @@ pub trait FileSystem: Send + Sync {
     fn root(&self) -> Arc<dyn FileNode>;
     fn lookup(&self, path: &str) -> Option<Arc<dyn FileNode>>;
 }
+
+// Example of connecting it in your main setup
+let my_drive = Box::new(YourAtaDrive::new()); // Wherever your block device comes from
+if let Ok(fat32_fs) = Fat32FileSystem::mount(my_drive) {
+    // Successfully mounted!
+}
+
