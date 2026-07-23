@@ -126,6 +126,11 @@ pub extern "C" fn kmain() -> ! {
             let _ = writeln!(uart, "mitosOS: FAT32 mount skipped ({e})");
         }
     }
+    
+    // In src/main.rs or a storage initialization function:
+let mut fat32_fs = crate::fs::fat32::Fat32FileSystem::new(ata_device);
+let content = fat32_fs.read_file_by_path("/test.txt");
+
 
     // --- Spawn Background Worker Task ---
     crate::task::spawn(background_worker, crate::task::ExecutionMode::SharedThread);
