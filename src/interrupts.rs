@@ -232,7 +232,7 @@ mod imp {
             IDT.entries[0x20].set_handler(timer_handler_stub as *const () as usize);
             IDT.entries[0x24].set_handler(uart_handler_stub as *const () as usize);
             IDT.entries[0x80].set_handler(syscall_handler_stub as *const () as usize);
-            IDT.entries[128].set_handler_fn(crate::interrupts::x86_syscall_trap);
+            IDT.entries[128].set_handler(crate::interrupts::x86_syscall_trap);
 
 
 
