@@ -162,3 +162,25 @@ pub fn read_sectors(lba: u32, count: u32, buf: &mut [u8]) -> Result<(), AtaError
 
     Ok(())
 }
+
+/// Thin wrapper giving callers a `Self` to hold and pass around instead of
+/// calling the free functions above directly. Doesn't add new behavior --
+/// exists so future disk-backed code (e.g. a filesystem driver) has a
+/// value to construct rather than a bag of module functions.
+#[derive(Debug, Clone, Copy)]
+pub struct AtaDevice;
+
+impl AtaDevice {
+    pub const fn new() -> Self {
+        Self
+    }
+
+    pub fn read_sector(&self, lba: u32, buf: &mut [u8; 512]) -> Result<(), AtaError> {
+        read_sector(lba, buf)
+    }
+
+    pub fn read_sectors(&self, lba: u32, count: u32, buf: &mut [u8]) -> Result<(), AtaError> {
+        read_sectors(lba, count, buf)
+    }
+}
+
