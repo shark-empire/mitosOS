@@ -275,4 +275,3 @@ impl Framebuffer {
     
 }
 
-framebuffer.draw_rect(10, 10, 100, 50, crate::graphics::Color::BLUE);
