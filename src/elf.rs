@@ -132,7 +132,7 @@ unsafe fn map_and_copy_segment(
     vaddr: usize,
     data: &[u8],
     memsz: usize,
-    _flags: u32,
+    flags: u32,
 ) -> Result<(), &'static str> {
     unsafe {
         const PAGE_SIZE: usize = 4096;
@@ -140,14 +140,24 @@ unsafe fn map_and_copy_segment(
         let start_vaddr = vaddr & !(PAGE_SIZE - 1);
         let end_vaddr = (vaddr + memsz + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
 
+        // ELF p_flags: PF_X = 1, PF_W = 2, PF_R = 4.
+        let map_flags = crate::memory::MapFlags {
+            writable: flags & 0x2 != 0,
+            user_accessible: true,
+            execute_disable: flags & 0x1 == 0,
+        };
+
+        let root = page_table_root as *mut crate::vmm::arch::PageTable;
+
         let mut current_vaddr = start_vaddr;
         let mut data_offset = 0;
 
         while current_vaddr < end_vaddr {
-            let phys_frame = crate::memory::alloc_frame()
+            let phys_frame = crate::memory::vmm_alloc_frame()
                 .ok_or("Out of memory: failed to allocate frame for ELF segment")?;
 
-            crate::memory::map_page(page_table_root, current_vaddr, phys_frame)?;
+            crate::vmm::arch::map_page(root, current_vaddr, phys_frame, map_flags)
+                .map_err(|_| "Failed to map page for ELF segment")?;
 
             let page_offset = if current_vaddr < vaddr { vaddr - current_vaddr } else { 0 };
             let copy_start_in_page = page_offset;
