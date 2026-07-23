@@ -266,6 +266,8 @@ pub fn spawn(entry_point: extern "C" fn() -> !, mode: ExecutionMode) -> bool {
     false
 }
 
+
+
 /// Spawns a task whose entry point is only known at runtime -- e.g. loaded
 /// from an ELF image -- rather than a named Rust function. The transmute is
 /// valid because callers (currently only the ELF loader) have already
@@ -281,10 +283,24 @@ fn allocate_isolated_page_table(parent_root: usize) -> usize {
     unsafe {
         crate::memory::create_process_page_table().unwrap_or(parent_root)
     }
+    
 }
 
-// Inside your task/process spawner:
-let entry_point = crate::elf::load_elf_to_process(&elf_bytes, page_table_root).expect("ELF load failed");
+/// Spawns a new isolated process from an ELF binary in memory
+pub fn spawn_from_elf(elf_bytes: &[u8]) -> bool {
+    let parent_root = current_memory_root();
+    
+    // 1. Create a new memory space for the process
+    let page_table_root = allocate_isolated_page_table(parent_root);
+    
+    // 2. Load the ELF into that new memory space
+    let entry_point = crate::elf::load_elf_to_process(elf_bytes, page_table_root)
+        .expect("ELF load failed");
+        
+    // 3. Spawn the task using the entry address returned by the ELF loader
+    spawn_at(entry_point, ExecutionMode::IsolatedProcess)
+}
+
 
 
 /// Public task metadata structure for diagnostics.
