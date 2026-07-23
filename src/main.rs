@@ -23,6 +23,7 @@ pub mod syscall;
 pub mod version;
 
 use core::fmt::Write;
+use alloc::vec;
 use core::panic::PanicInfo;
 use crate::memory::{protect_boot_memory, MapFlags};
 use crate::graphics::{Framebuffer, Color};
