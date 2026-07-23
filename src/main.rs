@@ -1,3 +1,4 @@
+// Repo path: src/main.rs
 #![no_std]
 #![no_main]
 #![feature(alloc_error_handler)]
@@ -5,23 +6,22 @@
 // Unlocks Rust's official smart pointers and collections (Box, Vec, String, etc.)
 extern crate alloc;
 
+mod block;
 mod fs;
 mod interrupts;
 mod memory;
 mod ramdisk;
 mod shell;
+mod elf;
+mod fd;
+mod graphics;
+mod timer;
+mod vmm;
 pub mod task;
 mod uart;
-mod vmm;
 pub mod sync;
 pub mod syscall;
 pub mod version;
-pub mod timer;
-mod elf;
-mod fd;
-pub mod block;
-pub mod graphics;
-
 
 use core::fmt::Write;
 use core::panic::PanicInfo;
@@ -35,17 +35,14 @@ pub extern "C" fn kmain() -> ! {
         interrupts::init();
 
         // 2. Initialize the heap allocator subsystem.
+        // (Ensures .bss doesn't collide with 0x150_000 as kernel grows).
         memory::init_memory_subsystem(0x150_000, 0xA0_000);
-        memory::protect_boot_memory(0x1F0_000);
-        vmm_self_test(&mut uart);
-        
-        // 3. Initialize the hardware timer frequencies
-        crate::timer::hardware::init();
 
-        // 4. Unmask the UART's interrupt line.
+        // 3. Unmask the UART's interrupt line.
         uart.enable_interrupts();
-        
-        // STOP! Do not call `interrupts::enable_cpu_interrupts()` yet!
+
+        // 4. Unmask CPU-level interrupts (STI on x86, DAIFCLR on ARM64).
+        interrupts::enable_cpu_interrupts();
     }
 
     let _ = writeln!(uart, "mitosOS: kernel_main reached. Boot OK.");
@@ -65,119 +62,48 @@ pub extern "C" fn kmain() -> ! {
     if let Some(tar_fs) = inited {
         let adapter = alloc::sync::Arc::new(crate::fs::tar_adapter::TarFsAdapter::new(tar_fs));
         crate::fs::vfs::VFS.lock().mount("/", adapter);
-        
-     // TEMP DIAGNOSTIC — remove once confirmed
-    let _ = writeln!(uart, "mitosOS: ramdisk entries visible to parser:");
-    for f in tar_fs.files() {
-        let _ = writeln!(uart, "  '{}' ({} bytes)", f.name, f.size);
-    }
+        let _ = writeln!(uart, "mitosOS: initrd detected and VFS mounted at /");
     } else {
         let _ = writeln!(uart, "mitosOS: WARN - No valid initrd found.");
     }
-    
-    // Example of how to use your new ELF loader:
-    // --- Test Loading an ELF Binary (Level 
-        // --- Test Loading an ELF Binary (Level 4 Demo) ---
-    {
-        // 1. Use the absolute path to memory::create_process_page_table
-        if let Some(process_root) = unsafe { crate::memory::create_process_page_table() } {
-            
-            // 2. Look up the binary using the VFS `open` method
-            let file_node_opt = crate::fs::vfs::VFS.lock().open("/bin/test_program");
-            
-            if let Some(node) = file_node_opt {
-                // 3. Read the file contents (FileNode::read takes offset: usize, buf: &mut [u8]) -> Result<usize, &str>
-                let mut buffer = alloc::vec![0; 4096];
-                
-                // Pass offset 0 as the first argument, and handle the Result<usize, &str>
-                match node.read(0, &mut buffer) {
-                    Ok(bytes_read) if bytes_read > 0 => {
-                        match crate::elf::load_elf_to_process(&buffer[0..bytes_read], process_root) {
-                            Ok(entry_point) => {
-                                let _ = writeln!(uart, "mitosOS: ELF loaded successfully at entry {:#x}", entry_point);
-                            }
-                            Err(e) => {
-                                let _ = writeln!(uart, "mitosOS: ELF load error: {}", e);
-                            }
-                        }
-                    }
-                    Ok(_) => {
-                        let _ = writeln!(uart, "mitosOS: ELF file found, but it was empty.");
-                    }
-                    Err(err) => {
-                        let _ = writeln!(uart, "mitosOS: Failed to read ELF file: {}", err);
-                    }
-                }
-            } else {
-                let _ = writeln!(uart, "mitosOS: /bin/test_program not found in VFS.");
-            }
+
+    // --- FAT32 Mounting (RAM-backed test volume) ---
+    // RamBlockDevice starts zeroed, so mount() will fail with "Invalid boot
+    // sector signature" until real FAT32 bytes are written into it -- either
+    // seed it from an embedded test image, or swap RamBlockDevice for a real
+    // disk once fs::ata's BlockDevice impl is ready. That failure path is
+    // expected right now, not a bug -- it's handled below, not panicking.
+    //
+    // 256 sectors = 128KB, sized to comfortably fit your ~640KB heap. A real
+    // FAT32 volume needs far more than that in practice, so treat this as
+    // "prove the wiring works," not a production-sized mount.
+    let ram_disk: alloc::boxed::Box<dyn block::BlockDevice> =
+        alloc::boxed::Box::new(block::RamBlockDevice::new(256));
+
+    match crate::fs::fat32::Fat32FileSystem::mount(ram_disk) {
+        Ok(fat_fs) => {
+            let fat_adapter = alloc::sync::Arc::new(crate::fs::fat32_adapter::Fat32Adapter::new(fat_fs));
+            crate::fs::vfs::VFS.lock().mount("/disk", fat_adapter);
+            let _ = writeln!(uart, "mitosOS: FAT32 volume mounted at /disk");
+        }
+        Err(e) => {
+            let _ = writeln!(uart, "mitosOS: FAT32 mount skipped ({e})");
         }
     }
 
-
-    
-
-
-
-    // --- Spawn Background Worker Tasks ---
-    // Spawn these FIRST so the scheduler has something to swap to.
+    // --- Spawn Background Worker Task ---
     crate::task::spawn(background_worker, crate::task::ExecutionMode::SharedThread);
     crate::task::spawn(background_worker_2, crate::task::ExecutionMode::SharedThread);
-
-    // --- Enable Preemptive Multitasking ---
-    unsafe {
-        // NOW unmask CPU-level interrupts (STI / DAIFCLR).
-        // The hardware timer will begin ticking immediately after this line.
-        interrupts::enable_cpu_interrupts();
-    }
 
     // --- Start Kernel Shell ---
     shell::run(&mut uart, inited);
 }
 
-
-/// Builds a scratch page table and maps two pages through it, purely to
-/// exercise vmm.rs's table-walk and `MapFlags` encoding. Never installed
-/// as the active table, so it's inert with respect to the kernel's real
-/// memory model.
-unsafe fn vmm_self_test(uart: &mut uart::Uart) {
-    let Some(root_frame) = memory::vmm_alloc_frame() else {
-        let _ = writeln!(uart, "mitosOS: VMM self-test skipped (no free frame for root table)");
-        return;
-    };
-
-    unsafe {
-        core::ptr::write_bytes(root_frame as *mut u8, 0, 4096);
-    }
-    let root = root_frame as *mut vmm::arch::PageTable;
-
-    let data_result =
-        unsafe { vmm::arch::map_page(root, 0x150_000, 0x150_000, memory::MapFlags::kernel_data()) };
-    let code_result =
-        unsafe { vmm::arch::map_page(root, 0x400_000, 0x400_000, memory::MapFlags::kernel_code()) };
-
-    match (data_result, code_result) {
-        (Ok(()), Ok(())) => {
-            let _ = writeln!(uart, "mitosOS: VMM self-test OK (2 pages mapped in scratch table)");
-        }
-        (d, c) => {
-            let _ = writeln!(uart, "mitosOS: VMM self-test FAILED: data={:?} code={:?}", d, c);
-        }
-    }
-}
-
 /// Background worker task demonstrating preemptive task execution
 extern "C" fn background_worker() -> ! {
-     loop {
-        let mut uart = unsafe { crate::uart::Uart::init() };
-        let _ = core::fmt::Write::write_str(&mut uart, "[Worker 1: Tick]\n");
-        
-        // Spin to waste time. The hardware timer should interrupt this automatically!
-        for _ in 0..5_000_000 {
-            core::hint::spin_loop();
-        }
-        
-        // NOTICE: No yield_now() here anymore!
+    loop {
+        // Yield voluntarily or let the hardware timer interrupt switch tasks
+        crate::task::yield_now();
     }
 }
 
@@ -185,21 +111,6 @@ extern "C" fn background_worker() -> ! {
 fn panic(info: &PanicInfo) -> ! {
     let mut uart = unsafe { uart::Uart::init() };
     let _ = writeln!(uart, "mitosOS: PANIC: {info}");
-    park();
-}
-
-/// Called by the allocator when a heap allocation can't be satisfied.
-/// Without this, an OOM just aborts silently -- this at least tells you
-/// what was being allocated before the kernel halts.
-#[alloc_error_handler]
-fn alloc_error(layout: core::alloc::Layout) -> ! {
-    let mut uart = unsafe { uart::Uart::init() };
-    let _ = writeln!(
-        uart,
-        "mitosOS: PANIC: allocation failure (size={}, align={})",
-        layout.size(),
-        layout.align()
-    );
     park();
 }
 
@@ -221,8 +132,9 @@ extern "C" fn background_worker_2() -> ! {
     loop {
         let mut uart = unsafe { crate::uart::Uart::init() };
         let _ = core::fmt::Write::write_str(&mut uart, "[Worker 2: Tick]\n");
-        for _ in 0..5_000_000 {
+        for _ in 0..200_000 {
             core::hint::spin_loop();
-                          }
+        }
+        crate::task::yield_now();
     }
 }
