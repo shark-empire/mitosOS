@@ -266,6 +266,16 @@ pub fn spawn(entry_point: extern "C" fn() -> !, mode: ExecutionMode) -> bool {
     false
 }
 
+/// Spawns a task whose entry point is only known at runtime -- e.g. loaded
+/// from an ELF image -- rather than a named Rust function. The transmute is
+/// valid because callers (currently only the ELF loader) have already
+/// verified this is x86_64/aarch64 machine code that never returns.
+pub fn spawn_at(entry_addr: usize, mode: ExecutionMode) -> bool {
+    let entry_point: extern "C" fn() -> ! = unsafe { core::mem::transmute(entry_addr) };
+    spawn(entry_point, mode)
+}
+
+
 /// Allocates or clones a new page table root structure for isolated processes.
 fn allocate_isolated_page_table(parent_root: usize) -> usize {
     unsafe {
