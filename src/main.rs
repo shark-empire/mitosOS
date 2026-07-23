@@ -28,6 +28,7 @@ use crate::memory::{protect_boot_memory, MapFlags};
 use crate::graphics::{Framebuffer, Color};
 use crate::fd::FileDescriptorTable;
 use crate::ramdisk::TarFileSystem;
+use alloc::boxed::Box;
 
 
 
