@@ -26,8 +26,8 @@ use core::fmt::Write;
 use core::panic::PanicInfo;
 use crate::memory::{protect_boot_memory, MapFlags};
 use crate::graphics::{Framebuffer, Color};
-use crate::timer;
-use crate::interrupts::x86_syscall_trap;
+#[cfg(target_arch = "x86_64")]
+use crate::interrupts::x86_syscall_trap; // Update line 30
 use crate::ramdisk::TarFileSystem;
 use crate::fd::FileDescriptorTable;
 
@@ -91,7 +91,8 @@ pub extern "C" fn kmain() -> ! {
     }
 
     // 3. HARDWARE: Start the timer
-    timer::init();
+   timer::hardware::init();
+
 
     // 4. FILESYSTEM: Load the Ramdisk
     if let Some(_ramdisk) = TarFileSystem::new_embedded() {
