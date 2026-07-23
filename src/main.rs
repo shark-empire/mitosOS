@@ -1,7 +1,6 @@
 // Repo path: src/main.rs
 #![no_std]
 #![no_main]
-#![feature(alloc_error_handler)]
 
 // Unlocks Rust's official smart pointers and collections (Box, Vec, String, etc.)
 extern crate alloc;
@@ -25,6 +24,13 @@ pub mod version;
 
 use core::fmt::Write;
 use core::panic::PanicInfo;
+use crate::memory::{protect_boot_memory, MapFlags};
+use crate::graphics::{Framebuffer, Color};
+use crate::timer;
+use crate::interrupts::x86_syscall_trap;
+use crate::ramdisk::TarFileSystem;
+use crate::fd::FileDescriptorTable;
+
 
 #[unsafe(no_mangle)]
 pub extern "C" fn kmain() -> ! {
@@ -44,6 +50,8 @@ pub extern "C" fn kmain() -> ! {
         // 4. Unmask CPU-level interrupts (STI on x86, DAIFCLR on ARM64).
         interrupts::enable_cpu_interrupts();
     }
+    
+    
 
     let _ = writeln!(uart, "mitosOS: kernel_main reached. Boot OK.");
 
@@ -66,6 +74,32 @@ pub extern "C" fn kmain() -> ! {
     } else {
         let _ = writeln!(uart, "mitosOS: WARN - No valid initrd found.");
     }
+
+    // 1. MEMORY: Protect bootloader memory and set flags
+    unsafe {
+        protect_boot_memory(0x100000); // 0x100000 is a placeholder kernel end address
+        let _code = MapFlags::kernel_code();
+        let _data = MapFlags::kernel_data();
+    }
+
+    // 2. GRAPHICS: Initialize the screen
+    unsafe {
+        // Placeholders for framebuffer address, width, height, and pitch
+        let mut fb = Framebuffer::new(0xFD000000, 1024, 768, 4096);
+        fb.clear(Color::BLACK);
+        fb.draw_string(10, 10, "mitosOS System Init...", Color::GREEN);
+    }
+
+    // 3. HARDWARE: Start the timer
+    timer::init();
+
+    // 4. FILESYSTEM: Load the Ramdisk
+    if let Some(_ramdisk) = TarFileSystem::new_embedded() {
+        // Ramdisk successfully loaded into memory
+    }
+
+    // 5. USERSPACE: Prepare file descriptor table
+    let mut _root_fd_table = FileDescriptorTable::new();
 
     // --- FAT32 Mounting (RAM-backed test volume) ---
     // RamBlockDevice starts zeroed, so mount() will fail with "Invalid boot
