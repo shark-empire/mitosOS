@@ -1,3 +1,4 @@
+// Repo path: src/fs/mod.rs
 //! Virtual file system layer for mitosOS.
 //! Defines the core node/metadata abstractions that concrete file systems
 //! (ramdisk, FAT32, etc.) implement against.
@@ -7,9 +8,12 @@ use alloc::sync::Arc;
 
 pub mod vfs;
 pub mod tar_adapter;
+pub mod fat32;
+pub mod fat32_adapter;
+
 #[cfg(target_arch = "x86_64")]
 pub mod ata;
-pub mod fat32;
+
 /// The kind of entry a `FileNode` represents.
 pub enum NodeType {
     File,
@@ -36,10 +40,3 @@ pub trait FileSystem: Send + Sync {
     fn root(&self) -> Arc<dyn FileNode>;
     fn lookup(&self, path: &str) -> Option<Arc<dyn FileNode>>;
 }
-
-// Example of connecting it in your main setup
-let my_drive = Box::new(YourAtaDrive::new()); // Wherever your block device comes from
-if let Ok(fat32_fs) = Fat32FileSystem::mount(my_drive) {
-    // Successfully mounted!
-}
-
