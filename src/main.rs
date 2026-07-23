@@ -26,10 +26,12 @@ use core::fmt::Write;
 use core::panic::PanicInfo;
 use crate::memory::{protect_boot_memory, MapFlags};
 use crate::graphics::{Framebuffer, Color};
+use crate::fd::FileDescriptorTable;
+use crate::ramdisk::TarFileSystem;
 #[cfg(target_arch = "x86_64")]
 use crate::interrupts::x86_syscall_trap; // Update line 30
-use crate::ramdisk::TarFileSystem;
-use crate::fd::FileDescriptorTable;
+
+
 
 
 #[unsafe(no_mangle)]
