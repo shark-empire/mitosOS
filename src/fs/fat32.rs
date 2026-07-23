@@ -1,3 +1,4 @@
+// Repo path: src/fs/fat32.rs
 //! Professional Production-Ready FAT32 Filesystem Driver for mitosOS.
 
 use crate::block::{BlockDevice, SECTOR_SIZE};
@@ -9,11 +10,11 @@ use alloc::boxed::Box;
 
 /// FAT32 Directory Entry Attributes
 pub const ATTR_READ_ONLY: u8 = 0x01;
-pub const ATTR_HIDDEN: u8    = 0x02;
-pub const ATTR_SYSTEM: u8    = 0x04;
+pub const ATTR_HIDDEN: u8 = 0x02;
+pub const ATTR_SYSTEM: u8 = 0x04;
 pub const ATTR_VOLUME_ID: u8 = 0x08;
 pub const ATTR_DIRECTORY: u8 = 0x10;
-pub const ATTR_ARCHIVE: u8   = 0x20;
+pub const ATTR_ARCHIVE: u8 = 0x20;
 pub const ATTR_LONG_NAME: u8 = ATTR_READ_ONLY | ATTR_HIDDEN | ATTR_SYSTEM | ATTR_VOLUME_ID;
 
 /// Parsed geometry and metadata for a FAT32 volume.
@@ -71,17 +72,14 @@ impl FatDirectoryEntry {
     pub fn get_name(&self) -> String {
         let mut name_part = Vec::new();
         let mut ext_part = Vec::new();
-
         for i in 0..8 {
             if self.name[i] == b' ' { break; }
             name_part.push(self.name[i]);
         }
-
         for i in 8..11 {
             if self.name[i] == b' ' { break; }
             ext_part.push(self.name[i]);
         }
-
         let mut formatted = String::from_utf8_lossy(&name_part).to_string();
         if !ext_part.is_empty() {
             formatted.push('.');
@@ -169,6 +167,7 @@ impl Fat32FileSystem {
 
         let start_sector = self.cluster_to_sector(cluster);
         let mut sector_buf = [0u8; SECTOR_SIZE];
+
         for i in 0..sectors_per_cluster {
             let offset = i * SECTOR_SIZE;
             self.device.read_sector(start_sector + i, &mut sector_buf)?;
@@ -195,7 +194,6 @@ impl Fat32FileSystem {
                 break;
             }
             bytes_remaining -= cluster_size;
-
             current_cluster = self.next_cluster(current_cluster)?;
         }
 
@@ -233,10 +231,15 @@ impl Fat32FileSystem {
         Err("File or directory not found")
     }
 
-    pub fn read_file_by_path(&mut self, path: &str) -> Result<Vec<u8>, &'static str> {
+    /// Resolves a slash-separated path to its directory entry, without
+    /// reading the file's contents. Works for files *and* directories, so
+    /// VFS adapters can use it to build `Metadata` before deciding whether
+    /// (and how) to read. `read_file_by_path` below is now just a thin
+    /// wrapper around this.
+    pub fn resolve_path(&mut self, path: &str) -> Result<FatDirectoryEntry, &'static str> {
         let trimmed_path = path.trim_start_matches('/');
         if trimmed_path.is_empty() {
-            return Err("Invalid file path");
+            return Err("Root has no directory entry of its own");
         }
 
         let parts: Vec<&str> = trimmed_path.split('/').collect();
@@ -244,12 +247,9 @@ impl Fat32FileSystem {
 
         for (i, part) in parts.iter().enumerate() {
             let entry = self.find_in_directory(current_cluster, part)?;
-            
+
             if i == parts.len() - 1 {
-                if (entry.attr & ATTR_DIRECTORY) != 0 {
-                    return Err("Target path is a directory, not a file");
-                }
-                return self.read_file_content(entry.starting_cluster(), entry.file_size);
+                return Ok(entry);
             } else {
                 if (entry.attr & ATTR_DIRECTORY) == 0 {
                     return Err("Parent path component is not a directory");
@@ -259,5 +259,15 @@ impl Fat32FileSystem {
         }
 
         Err("Path resolution failed")
+    }
+
+    pub fn read_file_by_path(&mut self, path: &str) -> Result<Vec<u8>, &'static str> {
+        let entry = self.resolve_path(path)?;
+
+        if (entry.attr & ATTR_DIRECTORY) != 0 {
+            return Err("Target path is a directory, not a file");
+        }
+
+        self.read_file_content(entry.starting_cluster(), entry.file_size)
     }
 }
