@@ -89,6 +89,9 @@ fn sys_uname(ptr: *mut UtsName) -> usize {
 /// Terminates the current execution task.
 fn sys_exit(_exit_code: usize) -> ! {
     crate::task::exit();
+    loop {
+        unsafe { core::arch::asm!("hlt"); }
+    }
 }
 
 /// Fallback for unregistered or unhandled system call numbers.
