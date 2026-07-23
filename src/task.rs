@@ -78,6 +78,7 @@ struct TaskStack([u8; STACK_SIZE]);
 #[repr(C, align(64))]
 pub struct Task {
     pub id: usize,
+    pub fd_table: crate::fd::FileDescriptorTable,
     pub parent_id: usize,
     pub sp: usize,
     /// Hardware Page Table Root (CR3 on x86_64, TTBR0_EL1 on AArch64).
@@ -271,6 +272,10 @@ fn allocate_isolated_page_table(parent_root: usize) -> usize {
         crate::memory::create_process_page_table().unwrap_or(parent_root)
     }
 }
+
+// Inside your task/process spawner:
+let entry_point = crate::elf::load_elf_to_process(&elf_bytes, page_table_root).expect("ELF load failed");
+
 
 /// Public task metadata structure for diagnostics.
 #[derive(Debug, Clone, Copy)]
