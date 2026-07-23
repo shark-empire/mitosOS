@@ -250,8 +250,6 @@ impl Framebuffer {
     }
 
 
-// Inside your graphics/UI loop:
-framebuffer.draw_rect(10, 10, 100, 50, crate::graphics::Color::BLUE);
 
     /// Draws a text string starting at (x, y) coordinates with newline support.
     pub fn draw_string(&mut self, mut x: usize, mut y: usize, text: &str, color: Color) {
@@ -271,5 +269,10 @@ framebuffer.draw_rect(10, 10, 100, 50, crate::graphics::Color::BLUE);
                 }
             }
         }
+    
     }
+    
+    
 }
+
+framebuffer.draw_rect(10, 10, 100, 50, crate::graphics::Color::BLUE);
