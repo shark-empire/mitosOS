@@ -88,6 +88,46 @@ fn wait_for_data() -> Result<(), AtaError> {
     Err(AtaError::Timeout)
 }
 
+
+/// Reads `count` consecutive sectors starting at `lba` into `buf`.
+/// Provided for direct shell/debug access.
+pub fn read_sectors(lba: u32, count: u32, buf: &mut [u8]) -> Result<(), AtaError> {
+    assert_eq!(
+        buf.len(),
+        count as usize * SECTOR_SIZE,
+        "buffer size must match sector count"
+    );
+
+    for i in 0..count {
+        let current_lba = lba + i;
+        wait_while_busy()?;
+
+        unsafe {
+            // 0xE0: LBA mode + Drive 0 + Top 4 bits of LBA
+            outb(DRIVE_HEAD, 0xE0 | ((current_lba >> 24) as u8 & 0x0F));
+            io_delay();
+
+            outb(SECTOR_COUNT, 1);
+            outb(LBA_LOW, current_lba as u8);
+            outb(LBA_MID, (current_lba >> 8) as u8);
+            outb(LBA_HIGH, (current_lba >> 16) as u8);
+            outb(COMMAND, CMD_READ_SECTORS);
+        }
+
+        wait_for_data()?;
+
+        let start = i as usize * SECTOR_SIZE;
+        for chunk in buf[start..start + SECTOR_SIZE].chunks_exact_mut(2) {
+            let word = unsafe { inw(DATA) };
+            chunk[0] = word as u8;
+            chunk[1] = (word >> 8) as u8;
+        }
+    }
+
+    Ok(())
+}
+
+
 // ==========================================
 // The ATA Device
 // ==========================================
