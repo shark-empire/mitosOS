@@ -127,7 +127,7 @@ pub fn scan_pci_devices(uart: &mut impl Write) {
      
    }
  }
-}
+
 // --- Enumerator ---
 
 /// Scans the PCI buses and returns a list of all attached devices.
