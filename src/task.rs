@@ -5,7 +5,6 @@
 
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use alloc::vec::Vec;
-use spin::lazy::Lazy;
 
 const STACK_SIZE: usize = 8192; // 8KB stack per task
 const MAX_TASKS: usize = 4;
@@ -79,7 +78,7 @@ struct TaskStack([u8; STACK_SIZE]);
 #[repr(C, align(64))]
 pub struct Task {
     pub id: usize,
-    pub fd_table: crate::fd::FileDescriptorTable,
+    pub fd_table: Option<crate::fd::FileDescriptorTable>,
     pub parent_id: usize,
     pub sp: usize,
     /// Hardware Page Table Root (CR3 on x86_64, TTBR0_EL1 on AArch64).
@@ -99,7 +98,7 @@ impl Task {
             state: TaskState::Terminated,
             mailbox: None,
             stack: TaskStack([0; STACK_SIZE]),
-            fd_table: crate::fd::FileDescriptorTable::new(), 
+            fd_table: nome,
         }
     }
 
@@ -116,6 +115,7 @@ impl Task {
         self.id = id;
         self.parent_id = if mode == ExecutionMode::SharedThread { id } else { id };
         self.state = TaskState::Ready;
+        self.fd_table = Some(crate::fd::FileDescriptorTable::new()); 
 
         self.memory_root = match mode {
             ExecutionMode::SharedThread => parent_memory_root,
