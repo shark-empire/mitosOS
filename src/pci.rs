@@ -55,6 +55,44 @@ pub fn read_config_8(bus: u8, slot: u8, func: u8, offset: u8) -> u8 {
     ((value >> ((offset & 3) * 8)) & 0xFF) as u8
 }
 
+// Remove the frame_allocator field from the struct!
+pub struct KernelHal {
+    pub phys_mem_offset: u64,
+}
+
+impl crate::drivers::ahci::Hal for KernelHal {
+    unsafe fn map_mmio(&mut self, phys:  PhysAddr, _size: usize) -> VirtAddr {
+         VirtAddr::new(phys.as_u64() + self.phys_mem_offset)
+    }
+
+    unsafe fn alloc_dma(&mut self, size: usize) -> Option<(PhysAddr, VirtAddr)> {
+        let frames_needed = (size + 4095) / 4096;
+        
+        // Use your global PMM directly instead of a struct field
+        let mut pmm = crate::memory::PHYSICAL_PMM.lock();
+        let first_frame_idx = pmm.allocate_next_frame()?;
+        let start_phys = PhysAddr::new((first_frame_idx * 4096) as u64);
+
+        let virt = VirtAddr::new(start_phys.as_u64() + self.phys_mem_offset);
+        
+        // Zero out the DMA memory block
+        unsafe{
+        core::ptr::write_bytes(virt.as_u64() as *mut u8, 0, frames_needed * 4096);
+        }
+        Some((start_phys, virt))
+    }
+
+    unsafe fn virt_to_phys(&self, virt: VirtAddr) -> Option<PhysAddr> {
+        Some(PhysAddr::new(virt.as_u64() - self.phys_mem_offset))
+    }
+
+    fn wait_micros(&self, micros: u32) {
+        for _ in 0..(micros as u64 * 1000) {
+            core::hint::spin_loop();
+        }
+    }
+}
+
 // --- Device Representation ---
 
 #[derive(Debug)]
