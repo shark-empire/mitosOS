@@ -76,7 +76,8 @@ pub struct PciDevice {
 // Pass `uart` into the function. `impl Write` allows any UART struct
 // that implements the Write trait to be passed in.
 pub fn scan_pci_devices(uart: &mut impl Write) {
-    // (Your code that defines pci_devices goes here...)
+    // Assuming pci_devices is populated here, e.g.:
+    // let pci_devices = ...;
 
     for dev in pci_devices {
         if dev.class == 0x01 && dev.subclass == 0x06 {
@@ -87,8 +88,30 @@ pub fn scan_pci_devices(uart: &mut impl Write) {
             };
 
             match unsafe { crate::drivers::ahci::AhciController::new(abar_phys, &mut hal) } {
-                Ok(mut _controller) => {
+                Ok(mut ahci_controller) => {
                     let _ = writeln!(uart, "AHCI Controller initialized successfully!");
+
+                    // Iterate over all active ports to find connected disks
+                    for port in ahci_controller.iter_ports() {
+                        if port.kind() == DeviceKind::Sata {
+                            let _ = writeln!(
+                                uart,
+                                "Found SATA Drive on Port {}: {} sectors (LBA48: {})",
+                                port.index(),
+                                port.sector_count(),
+                                port.supports_lba48()
+                            );
+                        }
+                    }
+
+                    // Example: Read sector 0 from Port 0 (if present)
+                    if let Some(disk) = ahci_controller.port_mut(0) {
+                        let mut sector_buf = [0u8; 512];
+                        if let Ok(()) = disk.read_sectors(&mut hal, 0, &mut sector_buf) {
+                            let _ = writeln!(uart, "Successfully read MBR / Sector 0 from disk!");
+                            // Pass sector_buf to your partition/filesystem parser (e.g., FAT32 mount)
+                        }
+                    }
                 }
                 Err(e) => {
                     let _ = writeln!(uart, "Failed to initialize AHCI controller: {:?}", e);
@@ -96,34 +119,8 @@ pub fn scan_pci_devices(uart: &mut impl Write) {
             }
         }
     }
+}
 
-
-
-            // Iterate over all active ports to find connected disks
-            for port in ahci_controller.iter_ports() {
-                if port.kind() == DeviceKind::Sata {
-                    let _ = writeln!(
-                        uart,
-                        "Found SATA Drive on Port {}: {} sectors (LBA48: {})",
-                        port.index(),
-                        port.sector_count(),
-                        port.supports_lba48()
-                    );
-                }
-            }
-
-            // Example: Read sector 0 from Port 0 (if present)
-            if let Some(disk) = ahci_controller.port_mut(0) {
-                let mut sector_buf = [0u8; 512];
-                if let Ok(()) = disk.read_sectors(&mut hal, 0, &mut sector_buf) {
-                    let _ = writeln!(uart, "Successfully read MBR / Sector 0 from disk!");
-                    // Pass sector_buf to your partition/filesystem parser (e.g., FAT32 mount)
-                }
-            }
-            Err(e) => {
-            let _ = writeln!(uart, "Failed to initialize AHCI controller: {:?}", e);
-        }
-        }
         
      
    
