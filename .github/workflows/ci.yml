@@ -20,7 +20,7 @@ jobs:
             # Boots disk.img via SeaBIOS — exercises the real
             # stage1 -> stage2 -> kernel handoff, not a shortcut load.
             # Updated to -M q35 for AHCI/PCIe support.
-            qemu_flags: -M q35 -m 256M -no-reboot -display none -serial stdio
+            qemu_flags: -M pc -m 256M -no-reboot -display none -serial stdio
             bin_name: mitosos
 
     steps:
