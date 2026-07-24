@@ -126,7 +126,7 @@ pub fn scan_pci_devices(uart: &mut impl Write) {
         }
      
    }
- }
+ 
 
 // --- Enumerator ---
 
