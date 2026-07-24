@@ -66,7 +66,7 @@ pub struct FileDescriptorTable {
 }
 
 impl FileDescriptorTable {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         let mut table = Self {
             fds: Vec::with_capacity(MAX_PROCESS_FDS),
         };
