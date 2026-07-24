@@ -129,8 +129,10 @@ impl crate::drivers::ahci::Hal for KernelHal {
 
 
 // Inside src/main.rs
+#[cfg(target_arch = "x86_64")]
+{
 crate::pci::scan_pci_devices(&mut my_uart_driver);
-
+}
 
 
     // --- Ramdisk & VFS Mounting ---
