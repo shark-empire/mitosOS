@@ -98,7 +98,7 @@ impl Task {
             state: TaskState::Terminated,
             mailbox: None,
             stack: TaskStack([0; STACK_SIZE]),
-            fd_table: alloc::vec::Vec::new(), // <--- Place it inside here
+            fd_table: crate::fd::FileDescriptorTable::new(), 
         }
     }
 
