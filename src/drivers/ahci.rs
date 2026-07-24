@@ -45,8 +45,7 @@
 
 use core::ptr::{read_volatile, write_volatile};
 use core::sync::atomic::{fence, Ordering};
-#[cfg(target_arch = "x86_64")]
-use x86_64::{PhysAddr, VirtAddr};
+use crate::addr::{PhysAddr, VirtAddr};
 
 // =========================================================================
 // Hardware Abstraction Layer expected from the kernel
