@@ -88,7 +88,6 @@ fn wait_for_data() -> Result<(), AtaError> {
     Err(AtaError::Timeout)
 }
 
-
 /// Reads `count` consecutive sectors starting at `lba` into `buf`.
 /// Provided for direct shell/debug access.
 pub fn read_sectors(lba: u32, count: u32, buf: &mut [u8]) -> Result<(), AtaError> {
@@ -103,7 +102,6 @@ pub fn read_sectors(lba: u32, count: u32, buf: &mut [u8]) -> Result<(), AtaError
         wait_while_busy()?;
 
         unsafe {
-            // 0xE0: LBA mode + Drive 0 + Top 4 bits of LBA
             outb(DRIVE_HEAD, 0xE0 | ((current_lba >> 24) as u8 & 0x0F));
             io_delay();
 
@@ -126,7 +124,6 @@ pub fn read_sectors(lba: u32, count: u32, buf: &mut [u8]) -> Result<(), AtaError
 
     Ok(())
 }
-
 
 // ==========================================
 // The ATA Device
@@ -185,11 +182,14 @@ impl AtaDevice {
         Ok(Self { total_sectors })
     }
 
-    /// Flushes the drive's hardware write cache to physical media.
+    /// Flushes the disk hardware cache
     pub fn flush_cache(&self) -> Result<(), AtaError> {
         wait_while_busy()?;
-        unsafe { outb(COMMAND, CMD_CACHE_FLUSH); }
-        wait_while_busy()
+        unsafe {
+            outb(COMMAND, CMD_CACHE_FLUSH);
+        }
+        wait_while_busy()?;
+        Ok(())
     }
 }
 
@@ -207,7 +207,6 @@ impl BlockDevice for AtaDevice {
         wait_while_busy().map_err(|_| "ATA Timeout")?;
 
         unsafe {
-            // 0xE0: LBA mode + Drive 0 + Top 4 bits of LBA
             outb(DRIVE_HEAD, 0xE0 | ((lba >> 24) as u8 & 0x0F));
             io_delay();
 
@@ -220,7 +219,6 @@ impl BlockDevice for AtaDevice {
 
         wait_for_data().map_err(|_| "ATA Device Error during Read")?;
 
-        // Read data back
         for chunk in buf.chunks_exact_mut(2) {
             let word = unsafe { inw(DATA) };
             chunk[0] = word as u8;
@@ -239,7 +237,6 @@ impl BlockDevice for AtaDevice {
         wait_while_busy().map_err(|_| "ATA Timeout")?;
 
         unsafe {
-            // 0xE0: LBA mode + Drive 0 + Top 4 bits of LBA
             outb(DRIVE_HEAD, 0xE0 | ((lba >> 24) as u8 & 0x0F));
             io_delay();
 
@@ -252,13 +249,11 @@ impl BlockDevice for AtaDevice {
 
         wait_for_data().map_err(|_| "ATA Device Error during Write")?;
 
-        // Write data out
         for chunk in buf.chunks_exact(2) {
             let word = (chunk[0] as u16) | ((chunk[1] as u16) << 8);
             unsafe { outw(DATA, word); }
         }
 
-        // Flush cache to ensure data is physically written
         self.flush_cache().map_err(|_| "ATA Cache Flush Failed")?;
 
         Ok(())
