@@ -136,7 +136,7 @@ let ata_device = crate::fs::ata::AtaDevice::new(); // Or your specific initializ
 // src/main.rs around line 134–136
 
 #[cfg(target_arch = "aarch64")]
-let block_device = Box::new(crate::block::RamBlockDevice::new());
+let block_device = Box::new(crate::block::RamBlockDevice::new(2048));
 
 #[cfg(target_arch = "x86_64")]
 let block_device = Box::new(crate::fs::ata::AtaDevice::new());
