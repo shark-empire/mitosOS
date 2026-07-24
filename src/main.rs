@@ -22,6 +22,7 @@ mod uart;
 pub mod sync;
 pub mod syscall;
 pub mod version;
+pub mod addr;
 #[cfg(target_arch = "x86_64")]
 pub mod pci;
 
