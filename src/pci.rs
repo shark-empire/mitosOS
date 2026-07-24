@@ -80,7 +80,7 @@ pub fn scan_pci_devices(uart: &mut impl Write) {
 
     for dev in pci_devices {
         if dev.class == 0x01 && dev.subclass == 0x06 {
-            let abar_phys = x86_64::PhysAddr::new(dev.bar5 as u64);
+            let abar_phys = PhysAddr::new(dev.bar5 as u64);
             
             let mut hal = crate::KernelHal { 
                 phys_mem_offset: 0 
