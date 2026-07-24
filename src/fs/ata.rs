@@ -198,7 +198,7 @@ impl AtaDevice {
 // ==========================================
 
 impl BlockDevice for AtaDevice {
-    fn read_sector(&self, sector_id: usize, buf: &mut [u8; SECTOR_SIZE]) -> Result<(), &'static str> {
+    fn read_sector(&mut self, sector_id: usize, buf: &mut [u8; SECTOR_SIZE]) -> Result<(), &'static str> {
         let lba = sector_id as u32;
         if lba >= self.total_sectors {
             return Err("ATA Read Out of Bounds");
