@@ -135,11 +135,12 @@ pub extern "C" fn kmain() -> ! {
 let ata_device = crate::fs::ata::AtaDevice::new(); // Or your specific initialization method
 // src/main.rs around line 134–136
 
+
 #[cfg(target_arch = "aarch64")]
-let block_device = Box::new(crate::block::RamBlockDevice::new(2048));
+let block_device: Box<dyn crate::block::BlockDevice> = Box::new(crate::block::RamBlockDevice::new(2048));
 
 #[cfg(target_arch = "x86_64")]
-let block_device = Box::new(crate::fs::ata::AtaDevice::new());
+let block_device: Box<dyn crate::block::BlockDevice> = Box::new(crate::fs::ata::AtaDevice::new());
 
 let mut fat32_fs = crate::fs::fat32::Fat32FileSystem::mount(block_device)
     .expect("FAT32 mount failed");
