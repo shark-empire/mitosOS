@@ -5,6 +5,7 @@
 
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use alloc::vec::Vec;
+use spin::lazy::Lazy;
 
 const STACK_SIZE: usize = 8192; // 8KB stack per task
 const MAX_TASKS: usize = 4;
