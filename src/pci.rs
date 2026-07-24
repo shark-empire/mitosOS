@@ -79,7 +79,7 @@ pub fn scan_pci_devices(uart: &mut impl Write) {
     // Assuming pci_devices is populated here, e.g.:
     // let pci_devices = ...;
 
-    for dev in pci_devices {
+    for dev in scan_pci_devices {
         if dev.class == 0x01 && dev.subclass == 0x06 {
             let abar_phys = PhysAddr::new(dev.bar5 as u64);
             
