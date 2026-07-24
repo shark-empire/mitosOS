@@ -21,6 +21,7 @@ mod uart;
 pub mod sync;
 pub mod syscall;
 pub mod version;
+#[cfg(target_arch = "x86_64")]
 pub mod pci;
 
 
@@ -55,8 +56,10 @@ pub extern "C" fn kmain() -> ! {
         // 4. Unmask CPU-level interrupts (STI on x86, DAIFCLR on ARM64).
         interrupts::enable_cpu_interrupts();
     }
-    
-    
+    let _ = writeln!(uart, "mitosOS: kernel_main reached. Boot OK.");
+
+#[cfg(target_arch = "x86_64")]
+{
  let pci_devices = crate::pci::scan_buses();
 let _ = writeln!(uart, "--- PCI Devices Found ---");
 
@@ -73,11 +76,10 @@ for dev in pci_devices {
     }
 }
 let _ = writeln!(uart, "-------------------------");
-
+    }
 
     
 
-    let _ = writeln!(uart, "mitosOS: kernel_main reached. Boot OK.");
 
     // --- Ramdisk & VFS Mounting ---
     let inited: Option<ramdisk::TarFileSystem> = {
