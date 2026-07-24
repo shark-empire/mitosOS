@@ -1,4 +1,5 @@
 //! PCI (Peripheral Component Interconnect) Bus Enumerator
+#![cfg(target_arch = "x86_64")]
 
 use alloc::vec::Vec;
 
