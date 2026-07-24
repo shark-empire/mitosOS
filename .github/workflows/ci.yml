@@ -18,10 +18,10 @@ jobs:
           - target: x86_64-unknown-none
             qemu_bin: qemu-system-x86_64
             # Boots disk.img via SeaBIOS — exercises the real
-            # stage1 -> stage2 -> kernel handoff, not a shortcut load
-            qemu_flags: -M pc -m 256M -no-reboot -display none -serial stdio
+            # stage1 -> stage2 -> kernel handoff, not a shortcut load.
+            # Updated to -M q35 for AHCI/PCIe support.
+            qemu_flags: -M q35 -m 256M -no-reboot -display none -serial stdio
             bin_name: mitosos
-
 
     steps:
       - uses: actions/checkout@v4
@@ -37,7 +37,6 @@ jobs:
           targets: x86_64-unknown-none, aarch64-unknown-none
           components: llvm-tools-preview
 
-      # --- ADDED: Create rootfs.tar before building ARM kernel ---
       - name: Create ramdisk (ARM only)
         if: matrix.target == 'aarch64-unknown-none'
         run: |
@@ -67,7 +66,8 @@ jobs:
           if [ "${{ matrix.target }}" = "aarch64-unknown-none" ]; then
             BOOT_ARGS="-kernel kernel8.img"
           else
-            BOOT_ARGS="-drive format=raw,file=disk.img"
+            # Updated to attach disk.img to the AHCI controller instead of legacy IDE
+            BOOT_ARGS="-drive id=disk,file=disk.img,format=raw,if=none -device ahci,id=ahci0 -device ide-hd,drive=disk,bus=ahci0.0"
           fi
 
           timeout 20s ${{ matrix.qemu_bin }} ${{ matrix.qemu_flags }} $BOOT_ARGS 2>&1 | tee qemu_output.log || true
