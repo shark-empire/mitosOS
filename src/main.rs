@@ -16,6 +16,7 @@ mod fd;
 mod graphics;
 mod timer;
 mod vmm;
+mod drivers;
 pub mod task;
 mod uart;
 pub mod sync;
