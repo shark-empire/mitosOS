@@ -88,6 +88,7 @@ if let Some(frame) = crate::memory::alloc_frame() {
 }
 
     
+    
 
 // Remove the frame_allocator field from the struct!
 pub struct KernelHal {
@@ -125,6 +126,11 @@ impl crate::drivers::ahci::Hal for KernelHal {
         }
     }
 }
+
+
+// Inside src/main.rs
+crate::pci::scan_pci_devices(&mut my_uart_driver);
+
 
 
     // --- Ramdisk & VFS Mounting ---
