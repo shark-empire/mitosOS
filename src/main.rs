@@ -89,37 +89,37 @@ if let Some(frame) = crate::memory::alloc_frame() {
 
     
 
-pub struct KernelHal<'a> {
+// Remove the frame_allocator field from the struct!
+pub struct KernelHal {
     pub phys_mem_offset: u64,
-    pub frame_allocator: &'a mut crate::memory::BitmapAllocator<1024>, 
 }
 
-impl<'a> Hal for KernelHal<'a> {
-    unsafe fn map_mmio(&mut self, phys: PhysAddr, _size: usize) -> VirtAddr {
-        // If your kernel identity maps or offset-maps all physical memory:
-        VirtAddr::new(phys.as_u64() + self.phys_mem_offset)
+impl crate::drivers::ahci::Hal for KernelHal {
+    unsafe fn map_mmio(&mut self, phys: x86_64::PhysAddr, _size: usize) -> x86_64::VirtAddr {
+        x86_64::VirtAddr::new(phys.as_u64() + self.phys_mem_offset)
     }
 
-    unsafe fn alloc_dma(&mut self, size: usize) -> Option<(PhysAddr, VirtAddr)> {
+    unsafe fn alloc_dma(&mut self, size: usize) -> Option<(x86_64::PhysAddr, x86_64::VirtAddr)> {
         let frames_needed = (size + 4095) / 4096;
         
-        // Call your physical frame allocator to get `frames_needed` contiguous frames
-        let start_phys = self.frame_allocator.allocate_contiguous(frames_needed)?;
-        let virt = VirtAddr::new(start_phys.as_u64() + self.phys_mem_offset);
+        // Use your global PMM directly instead of a struct field
+        let mut pmm = crate::memory::PHYSICAL_PMM.lock();
+        let first_frame_idx = pmm.allocate_next_frame()?;
+        let start_phys = x86_64::PhysAddr::new((first_frame_idx * 4096) as u64);
+
+        let virt = x86_64::VirtAddr::new(start_phys.as_u64() + self.phys_mem_offset);
         
-        // Zero out the allocated DMA memory
+        // Zero out the DMA memory block
         core::ptr::write_bytes(virt.as_u64() as *mut u8, 0, frames_needed * 4096);
         
         Some((start_phys, virt))
     }
 
-    unsafe fn virt_to_phys(&self, virt: VirtAddr) -> Option<PhysAddr> {
-        Some(PhysAddr::new(virt.as_u64() - self.phys_mem_offset))
+    unsafe fn virt_to_phys(&self, virt: x86_64::VirtAddr) -> Option<x86_64::PhysAddr> {
+        Some(x86_64::PhysAddr::new(virt.as_u64() - self.phys_mem_offset))
     }
 
     fn wait_micros(&self, micros: u32) {
-        // Use your kernel's calibrated timer (PIT, APIC, or TSC) if available, 
-        // otherwise fall back to a spin loop:
         for _ in 0..(micros as u64 * 1000) {
             core::hint::spin_loop();
         }
