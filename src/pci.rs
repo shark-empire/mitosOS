@@ -3,7 +3,7 @@
 
 use alloc::vec::Vec;
 use crate::drivers::ahci::{AhciController, DeviceKind};
-use x86_64::PhysAddr;
+use crate::addr::{PhysAddr, VirtAddr};
 use core::fmt::Write;
 
 
