@@ -91,7 +91,7 @@ if let Some(frame) = crate::memory::alloc_frame() {
 
 pub struct KernelHal<'a> {
     pub phys_mem_offset: u64,
-    pub frame_allocator: &'a mut crate::memory::PHYSICAL_PMM, // Replace with your actual allocator type
+    pub frame_allocator: &'a mut crate::memory::BitmapAllocator<1024>, 
 }
 
 impl<'a> Hal for KernelHal<'a> {
