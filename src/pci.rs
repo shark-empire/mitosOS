@@ -70,6 +70,7 @@ pub struct PciDevice {
 
 
 // Inside your PCI device iteration loop:
+for dev in pci_devices{
 if dev.class == 0x01 && dev.subclass == 0x06 {
     let abar_phys = PhysAddr::new(dev.bar5 as u64);
     
@@ -109,6 +110,7 @@ if dev.class == 0x01 && dev.subclass == 0x06 {
             let _ = writeln!(uart, "Failed to initialize AHCI controller: {:?}", e);
         }
     }
+}
 }
 
 // --- Enumerator ---
