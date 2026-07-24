@@ -97,11 +97,11 @@ pub struct KernelHal {
 }
 
 impl crate::drivers::ahci::Hal for KernelHal {
-    unsafe fn map_mmio(&mut self, phys:  PhysAddr, _size: usize) -> x86_64::VirtAddr {
+    unsafe fn map_mmio(&mut self, phys:  PhysAddr, _size: usize) -> VirtAddr {
          VirtAddr::new(phys.as_u64() + self.phys_mem_offset)
     }
 
-    unsafe fn alloc_dma(&mut self, size: usize) -> Option<(x86_64::PhysAddr, x86_64::VirtAddr)> {
+    unsafe fn alloc_dma(&mut self, size: usize) -> Option<(PhysAddr, VirtAddr)> {
         let frames_needed = (size + 4095) / 4096;
         
         // Use your global PMM directly instead of a struct field
