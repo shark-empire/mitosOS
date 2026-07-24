@@ -120,10 +120,11 @@ pub fn scan_pci_devices(uart: &mut impl Write) {
                     // Pass sector_buf to your partition/filesystem parser (e.g., FAT32 mount)
                 }
             }
-        }
-        Err(e) => {
+            Err(e) => {
             let _ = writeln!(uart, "Failed to initialize AHCI controller: {:?}", e);
         }
+        }
+        
      
    
  
