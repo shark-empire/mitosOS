@@ -78,6 +78,12 @@ for dev in pci_devices {
 let _ = writeln!(uart, "-------------------------");
     }
 
+
+// Test frame allocation during initialization
+if let Some(frame) = crate::memory::alloc_frame() {
+    let _ = writeln!(uart, "Memory Manager: Allocated physical frame at 0x{:X}", frame);
+}
+
     
 
 
