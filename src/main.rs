@@ -33,6 +33,8 @@ use crate::graphics::{Framebuffer, Color};
 use crate::fd::FileDescriptorTable;
 use crate::ramdisk::TarFileSystem;
 use alloc::boxed::Box;
+use crate::drivers::ahci::Hal;
+use x86_64::{PhysAddr, VirtAddr};
 
 
 
@@ -85,6 +87,43 @@ if let Some(frame) = crate::memory::alloc_frame() {
 }
 
     
+
+pub struct KernelHal<'a> {
+    pub phys_mem_offset: u64,
+    pub frame_allocator: &'a mut crate::memory::BootInfoFrameAllocator, // Replace with your actual allocator type
+}
+
+impl<'a> Hal for KernelHal<'a> {
+    unsafe fn map_mmio(&mut self, phys: PhysAddr, _size: usize) -> VirtAddr {
+        // If your kernel identity maps or offset-maps all physical memory:
+        VirtAddr::new(phys.as_u64() + self.phys_mem_offset)
+    }
+
+    unsafe fn alloc_dma(&mut self, size: usize) -> Option<(PhysAddr, VirtAddr)> {
+        let frames_needed = (size + 4095) / 4096;
+        
+        // Call your physical frame allocator to get `frames_needed` contiguous frames
+        let start_phys = self.frame_allocator.allocate_contiguous(frames_needed)?;
+        let virt = VirtAddr::new(start_phys.as_u64() + self.phys_mem_offset);
+        
+        // Zero out the allocated DMA memory
+        core::ptr::write_bytes(virt.as_u64() as *mut u8, 0, frames_needed * 4096);
+        
+        Some((start_phys, virt))
+    }
+
+    unsafe fn virt_to_phys(&self, virt: VirtAddr) -> Option<PhysAddr> {
+        Some(PhysAddr::new(virt.as_u64() - self.phys_mem_offset))
+    }
+
+    fn wait_micros(&self, micros: u32) {
+        // Use your kernel's calibrated timer (PIT, APIC, or TSC) if available, 
+        // otherwise fall back to a spin loop:
+        for _ in 0..(micros as u64 * 1000) {
+            core::hint::spin_loop();
+        }
+    }
+}
 
 
     // --- Ramdisk & VFS Mounting ---
