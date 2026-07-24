@@ -2,6 +2,8 @@
 #![cfg(target_arch = "x86_64")]
 
 use alloc::vec::Vec;
+use crate::drivers::ahci::{AhciController, DeviceKind};
+use x86_64::PhysAddr;
 
 const CONFIG_ADDRESS: u16 = 0xCF8;
 const CONFIG_DATA: u16 = 0xCFC;
@@ -64,6 +66,49 @@ pub struct PciDevice {
     pub prog_if: u8,
     /// Base Address Register 5 (Crucial for AHCI MMIO)
     pub bar5: u32,
+}
+
+
+// Inside your PCI device iteration loop:
+if dev.class == 0x01 && dev.subclass == 0x06 {
+    let abar_phys = PhysAddr::new(dev.bar5 as u64);
+    
+    // Instantiate your HAL using your frame allocator and memory offset
+    let mut hal = KernelHal {
+        phys_mem_offset: 0xFFFF_8000_0000_0000, // Update to match your kernel's physical memory offset
+        frame_allocator: &mut FRAME_ALLOCATOR,     // Reference to your active frame allocator
+    };
+
+    match unsafe { AhciController::new(abar_phys, &mut hal) } {
+        Ok(mut ahci_controller) => {
+            let _ = writeln!(uart, "AHCI Controller initialized successfully!");
+
+            // Iterate over all active ports to find connected disks
+            for port in ahci_controller.iter_ports() {
+                if port.kind() == DeviceKind::Sata {
+                    let _ = writeln!(
+                        uart,
+                        "Found SATA Drive on Port {}: {} sectors (LBA48: {})",
+                        port.index(),
+                        port.sector_count(),
+                        port.supports_lba48()
+                    );
+                }
+            }
+
+            // Example: Read sector 0 from Port 0 (if present)
+            if let Some(disk) = ahci_controller.port_mut(0) {
+                let mut sector_buf = [0u8; 512];
+                if let Ok(()) = disk.read_sectors(&mut hal, 0, &mut sector_buf) {
+                    let _ = writeln!(uart, "Successfully read MBR / Sector 0 from disk!");
+                    // Pass sector_buf to your partition/filesystem parser (e.g., FAT32 mount)
+                }
+            }
+        }
+        Err(e) => {
+            let _ = writeln!(uart, "Failed to initialize AHCI controller: {:?}", e);
+        }
+    }
 }
 
 // --- Enumerator ---
