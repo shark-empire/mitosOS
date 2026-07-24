@@ -2,14 +2,17 @@
 
 pub const SECTOR_SIZE: usize = 512;
 
-/// Common interface for block storage drivers (VirtIO, NVMe, RAM Disks).
 pub trait BlockDevice: Send + Sync {
-    /// Reads a single 512-byte sector from the storage device.
-    fn read_sector(&self, sector_id: usize, buf: &mut [u8; SECTOR_SIZE]) -> Result<(), &'static str>;
-
-    /// Writes a single 512-byte sector to the storage device.
+    fn read_sector(&mut self, sector_id: usize, buf: &mut [u8; SECTOR_SIZE]) -> Result<(), &'static str>;
+    
+    // Put write_sector to work:
     fn write_sector(&mut self, sector_id: usize, buf: &[u8; SECTOR_SIZE]) -> Result<(), &'static str>;
+    
+    fn sector_size(&self) -> usize {
+        SECTOR_SIZE
+    }
 }
+
 
 /// A RAM-backed block device for testing filesystems in memory before attaching VirtIO hardware.
 pub struct RamBlockDevice {
