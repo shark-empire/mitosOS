@@ -57,6 +57,25 @@ pub extern "C" fn kmain() -> ! {
     }
     
     
+    // Scan the PCI bus
+let pci_devices = crate::pci::scan_buses();
+crate::println!("--- PCI Devices Found ---");
+
+for dev in pci_devices {
+    crate::println!(
+        "Bus {} Slot {}: Vendor 0x{:X} Device 0x{:X} | Class 0x{:02X} Subclass 0x{:02X}",
+        dev.bus, dev.slot, dev.vendor_id, dev.device_id, dev.class, dev.subclass
+    );
+    
+    // Check specifically for an AHCI Controller
+    // Class 0x01 = Mass Storage, Subclass 0x06 = SATA
+    if dev.class == 0x01 && dev.subclass == 0x06 {
+        crate::println!(">>> FOUND AHCI CONTROLLER! BAR5 Address: 0x{:X} <<<", dev.bar5);
+    }
+}
+crate::println!("-------------------------");
+
+    
 
     let _ = writeln!(uart, "mitosOS: kernel_main reached. Boot OK.");
 
