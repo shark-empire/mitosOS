@@ -89,7 +89,7 @@ pub struct Task {
 }
 
 impl Task {
-    pub const fn empty() -> Self {
+    pub fn empty() -> Self {
         Self {
             id: 0,
             parent_id: 0,
