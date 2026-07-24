@@ -112,8 +112,9 @@ impl crate::drivers::ahci::Hal for KernelHal {
         let virt = VirtAddr::new(start_phys.as_u64() + self.phys_mem_offset);
         
         // Zero out the DMA memory block
+        unsafe{
         core::ptr::write_bytes(virt.as_u64() as *mut u8, 0, frames_needed * 4096);
-        
+        }
         Some((start_phys, virt))
     }
 
