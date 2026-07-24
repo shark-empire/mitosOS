@@ -28,7 +28,7 @@ impl RamBlockDevice {
 }
 
 impl BlockDevice for RamBlockDevice {
-    fn read_sector(&self, sector_id: usize, buf: &mut [u8; SECTOR_SIZE]) -> Result<(), &'static str> {
+    fn read_sector(&mut self, sector_id: usize, buf: &mut [u8; SECTOR_SIZE]) -> Result<(), &'static str> {
         let start = sector_id * SECTOR_SIZE;
         let end = start + SECTOR_SIZE;
         if end > self.data.len() {
