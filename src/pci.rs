@@ -113,11 +113,9 @@ pub struct PciDevice {
 // Inside your PCI device iteration loop:
 // Pass `uart` into the function. `impl Write` allows any UART struct
 // that implements the Write trait to be passed in.
-pub fn pci_devices(uart: &mut impl Write) {
-    // Assuming pci_devices is populated here, e.g.:
-    // let pci_devices = ...;
+pub fn init_ahci_devices(uart: &mut impl Write) {
+    for dev in scan_buses() {
 
-    for dev in pci_devices {
         if dev.class == 0x01 && dev.subclass == 0x06 {
             let abar_phys = PhysAddr::new(dev.bar5 as u64);
             
@@ -125,7 +123,8 @@ pub fn pci_devices(uart: &mut impl Write) {
                 phys_mem_offset: 0 
             };
 
-            match unsafe { crate::drivers::ahci::AhciController::new(abar_phys, &mut hal) } {
+       match unsafe { AhciController::new(abar_phys, &mut hal) } {
+
                 Ok(mut ahci_controller) => {
                     let _ = writeln!(uart, "AHCI Controller initialized successfully!");
 
