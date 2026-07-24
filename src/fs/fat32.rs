@@ -95,7 +95,7 @@ pub struct Fat32FileSystem {
 }
 
 impl Fat32FileSystem {
-    pub fn mount(device: Box<dyn BlockDevice>) -> Result<Self, &'static str> {
+    pub fn mount(mut device: Box<dyn BlockDevice>) -> Result<Self, &'static str> {
         let mut sector_buf = [0u8; SECTOR_SIZE];
         device.read_sector(0, &mut sector_buf)?;
 
