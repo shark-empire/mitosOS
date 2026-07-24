@@ -121,7 +121,7 @@ pub fn scan_pci_devices(uart: &mut impl Write) {
         if dev.class == 0x01 && dev.subclass == 0x06 {
             let abar_phys = PhysAddr::new(dev.bar5 as u64);
             
-            let mut hal = crate::KernelHal { 
+            let mut hal = KernelHal { 
                 phys_mem_offset: 0 
             };
 
