@@ -28,15 +28,12 @@ pub mod pci;
 
 
 use core::fmt::Write;
-use alloc::vec;
 use core::panic::PanicInfo;
 use crate::memory::{protect_boot_memory, MapFlags};
 use crate::graphics::{Framebuffer, Color};
 use crate::fd::FileDescriptorTable;
 use crate::ramdisk::TarFileSystem;
 use alloc::boxed::Box;
-use crate::drivers::ahci::Hal;
-use crate::addr::{PhysAddr, VirtAddr};
 
 
 
@@ -97,8 +94,9 @@ if let Some(frame) = crate::memory::alloc_frame() {
 // Inside src/main.rs
 #[cfg(target_arch = "x86_64")]
 {
-crate::pci::scan_pci_devices(&mut my_uart_driver);
+    crate::pci::init_ahci_devices(&mut uart);
 }
+
 
 
     // --- Ramdisk & VFS Mounting ---
