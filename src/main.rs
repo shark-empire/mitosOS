@@ -21,6 +21,8 @@ mod uart;
 pub mod sync;
 pub mod syscall;
 pub mod version;
+pub mod pci;
+
 
 use core::fmt::Write;
 use alloc::vec;
