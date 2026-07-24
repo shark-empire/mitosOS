@@ -22,6 +22,8 @@ jobs:
             qemu_flags: -M pc -m 256M -no-reboot -display none -serial stdio
             bin_name: mitosos
 
+          -device ahci,id=ahci0 -device ide-hd,drive=disk0,bus=ahci0.0
+
     steps:
       - uses: actions/checkout@v4
 
