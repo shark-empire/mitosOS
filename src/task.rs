@@ -98,8 +98,11 @@ impl Task {
             state: TaskState::Terminated,
             mailbox: None,
             stack: TaskStack([0; STACK_SIZE]),
+            fd_table: alloc::vec::Vec::new(), // <--- Place it inside here
         }
     }
+}
+
 
     /// Initializes the stack frame, registers, and memory boundaries for a new task.
     pub fn init(
