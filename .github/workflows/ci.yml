@@ -60,14 +60,15 @@ jobs:
           chmod +x build.sh
           ./build.sh
 
-      - name: Boot in QEMU and check serial output
-        run: |
+            - name: Boot in QEMU and check serial output 
+         run: |
           set -o pipefail
           if [ "${{ matrix.target }}" = "aarch64-unknown-none" ]; then
             BOOT_ARGS="-kernel kernel8.img"
           else
-            # Updated to attach disk.img to the AHCI controller instead of legacy IDE
-            BOOT_ARGS="-drive id=disk,file=disk.img,format=raw,if=none -device ahci,id=ahci0 -device ide-hd,drive=disk,bus=ahci0.0"
+            # 1. Mounts disk.img on IDE for the bootloader
+            # 2. Injects an empty AHCI controller for the PCI scanner to find
+            BOOT_ARGS="-drive format=raw,file=disk.img,if=ide -device ahci,id=ahci0"
           fi
 
           timeout 20s ${{ matrix.qemu_bin }} ${{ matrix.qemu_flags }} $BOOT_ARGS 2>&1 | tee qemu_output.log || true
