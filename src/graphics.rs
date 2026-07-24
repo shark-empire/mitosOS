@@ -215,6 +215,12 @@ impl Framebuffer {
             }
         }
     }
+    
+    // Example initialization call inside your graphics setup routine
+pub fn draw_boot_splash(fb: &mut Framebuffer) {
+    fb.draw_rect(10, 10, 200, 50, Color::BLUE);
+}
+
 
     /// Draws a filled rectangle on screen.
     pub fn draw_rect(&mut self, x: usize, y: usize, w: usize, h: usize, color: Color) {
