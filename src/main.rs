@@ -97,8 +97,8 @@ pub struct KernelHal {
 }
 
 impl crate::drivers::ahci::Hal for KernelHal {
-    unsafe fn map_mmio(&mut self, phys: x86_64::PhysAddr, _size: usize) -> x86_64::VirtAddr {
-        x86_64::VirtAddr::new(phys.as_u64() + self.phys_mem_offset)
+    unsafe fn map_mmio(&mut self, phys:  PhysAddr, _size: usize) -> x86_64::VirtAddr {
+         VirtAddr::new(phys.as_u64() + self.phys_mem_offset)
     }
 
     unsafe fn alloc_dma(&mut self, size: usize) -> Option<(x86_64::PhysAddr, x86_64::VirtAddr)> {
@@ -107,9 +107,9 @@ impl crate::drivers::ahci::Hal for KernelHal {
         // Use your global PMM directly instead of a struct field
         let mut pmm = crate::memory::PHYSICAL_PMM.lock();
         let first_frame_idx = pmm.allocate_next_frame()?;
-        let start_phys = x86_64::PhysAddr::new((first_frame_idx * 4096) as u64);
+        let start_phys = PhysAddr::new((first_frame_idx * 4096) as u64);
 
-        let virt = x86_64::VirtAddr::new(start_phys.as_u64() + self.phys_mem_offset);
+        let virt = VirtAddr::new(start_phys.as_u64() + self.phys_mem_offset);
         
         // Zero out the DMA memory block
         core::ptr::write_bytes(virt.as_u64() as *mut u8, 0, frames_needed * 4096);
@@ -117,8 +117,8 @@ impl crate::drivers::ahci::Hal for KernelHal {
         Some((start_phys, virt))
     }
 
-    unsafe fn virt_to_phys(&self, virt: x86_64::VirtAddr) -> Option<x86_64::PhysAddr> {
-        Some(x86_64::PhysAddr::new(virt.as_u64() - self.phys_mem_offset))
+    unsafe fn virt_to_phys(&self, virt: VirtAddr) -> Option<PhysAddr> {
+        Some(PhysAddr::new(virt.as_u64() - self.phys_mem_offset))
     }
 
     fn wait_micros(&self, micros: u32) {
