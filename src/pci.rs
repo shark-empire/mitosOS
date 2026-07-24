@@ -124,7 +124,7 @@ pub fn scan_pci_devices(uart: &mut impl Write) {
         Err(e) => {
             let _ = writeln!(uart, "Failed to initialize AHCI controller: {:?}", e);
         }
-     }
+     
    }
  }
 }
