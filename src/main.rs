@@ -36,7 +36,7 @@ use crate::fd::FileDescriptorTable;
 use crate::ramdisk::TarFileSystem;
 use alloc::boxed::Box;
 use crate::drivers::ahci::Hal;
-use x86_64::{PhysAddr, VirtAddr};
+use crate::addr::{PhysAddr, VirtAddr};
 
 
 
