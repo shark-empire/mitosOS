@@ -131,6 +131,7 @@ pub extern "C" fn kmain() -> ! {
     
     // In src/main.rs or a storage initialization function:
 // To this (using an available ATA device or block device initializer):
+#[cfg(target_arch = "x86_64")]
 let ata_device = crate::fs::ata::AtaDevice::new(); // Or your specific initialization method
 let mut fat32_fs = crate::fs::fat32::Fat32FileSystem::mount(Box::new(ata_device)).expect("FAT32 mount failed");
 let content = fat32_fs.read_file_by_path("/test.txt");
