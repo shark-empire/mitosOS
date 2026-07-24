@@ -4,6 +4,9 @@
 use alloc::vec::Vec;
 use crate::drivers::ahci::{AhciController, DeviceKind};
 use x86_64::PhysAddr;
+use core::fmt::Write;
+
+
 
 const CONFIG_ADDRESS: u16 = 0xCF8;
 const CONFIG_DATA: u16 = 0xCFC;
@@ -70,20 +73,31 @@ pub struct PciDevice {
 
 
 // Inside your PCI device iteration loop:
-pub fn scan_pci_devices(){
-for dev in pci_devices{
-if dev.class == 0x01 && dev.subclass == 0x06 {
-    let abar_phys = PhysAddr::new(dev.bar5 as u64);
-    
-    // Instantiate your HAL using your frame allocator and memory offset
-    let mut hal = KernelHal {
-        phys_mem_offset: 0xFFFF_8000_0000_0000, // Update to match your kernel's physical memory offset
-        frame_allocator: &mut FRAME_ALLOCATOR,     // Reference to your active frame allocator
-    };
+// Pass `uart` into the function. `impl Write` allows any UART struct
+// that implements the Write trait to be passed in.
+pub fn scan_pci_devices(uart: &mut impl Write) {
+    // (Your code that defines pci_devices goes here...)
 
-    match unsafe { AhciController::new(abar_phys, &mut hal) } {
-        Ok(mut ahci_controller) => {
-            let _ = writeln!(uart, "AHCI Controller initialized successfully!");
+    for dev in pci_devices {
+        if dev.class == 0x01 && dev.subclass == 0x06 {
+            let abar_phys = x86_64::PhysAddr::new(dev.bar5 as u64);
+            
+            let mut hal = crate::KernelHal { 
+                phys_mem_offset: 0 
+            };
+
+            match unsafe { crate::drivers::ahci::AhciController::new(abar_phys, &mut hal) } {
+                Ok(mut _controller) => {
+                    let _ = writeln!(uart, "AHCI Controller initialized successfully!");
+                }
+                Err(e) => {
+                    let _ = writeln!(uart, "Failed to initialize AHCI controller: {:?}", e);
+                }
+            }
+        }
+    }
+
+
 
             // Iterate over all active ports to find connected disks
             for port in ahci_controller.iter_ports() {
