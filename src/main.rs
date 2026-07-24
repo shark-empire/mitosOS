@@ -64,10 +64,10 @@ pub extern "C" fn kmain() -> ! {
 
 #[cfg(target_arch = "x86_64")]
 {
- let pci_devices = crate::pci::scan_buses();
+ let scan_pci_devices = crate::pci::scan_buses();
 let _ = writeln!(uart, "--- PCI Devices Found ---");
 
-for dev in pci_devices {
+for dev in scan_pci_devices {
     let _ = writeln!(uart, 
         "Bus {} Slot {}: Vendor 0x{:X} Device 0x{:X} | Class 0x{:02X} Subclass 0x{:02X}",
         dev.bus, dev.slot, dev.vendor_id, dev.device_id, dev.class, dev.subclass
