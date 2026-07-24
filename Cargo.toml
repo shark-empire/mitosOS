@@ -19,6 +19,7 @@ strip = true
 
 [dependencies]
 spin = "0.9"
+x86_64 = "0.14.11"
 
 # Your kernel dependencies go here (e.g., spin, bitflags, x86_64 crates)
 
