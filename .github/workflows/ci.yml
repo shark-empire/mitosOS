@@ -19,11 +19,10 @@ jobs:
             qemu_bin: qemu-system-x86_64
             # Boots disk.img via SeaBIOS — exercises the real
             # stage1 -> stage2 -> kernel handoff, not a shortcut load.
-            qemu_flags: -M pc -m 256M -no-reboot -display none -serial stdio
+            qemu_flags: -M pc -m 256M -no-reboot -display none -serial stdio -device ahci,id=ahci0 -device ide-hd,drive=disk0,bus=ahci0.0
             bin_name: mitosos
 
-          -device ahci,id=ahci0 -device ide-hd,drive=disk0,bus=ahci0.0
-
+  
     steps:
       - uses: actions/checkout@v4
 
