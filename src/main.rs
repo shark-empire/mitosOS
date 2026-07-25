@@ -187,7 +187,108 @@ let mut fat32_fs = crate::fs::fat32::Fat32FileSystem::mount(block_device)
     .expect("FAT32 mount failed");
 
 
-let content = fat32_fs.read_file_by_path("/test.txt");
+    // 2. GRAPHICS: Initialize the screen
+    const FB_ADDR: usize = 0xFD000000;
+    const FB_WIDTH: usize = 1024;
+    const FB_HEIGHT: usize = 768;
+    const FB_PITCH: usize = 4096;
+
+    let mut fb = unsafe {
+        // Identity-map the framebuffer's MMIO pages before anything touches
+        // them -- writing through an unmapped physical address page-faults.
+        #[cfg(target_arch = "x86_64")]
+        {
+            let cr3: usize;
+            core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack));
+            let page_table_root = cr3 & !0xFFF;
+
+            let fb_pages = (FB_PITCH * FB_HEIGHT + 0xFFF) / 0x1000;
+            for i in 0..fb_pages {
+                let addr = FB_ADDR + i * 0x1000;
+                if let Err(e) = crate::memory::map_page(page_table_root, addr, addr) {
+                    let _ = writeln!(uart, "mitosOS: WARN framebuffer mapping failed: {e}");
+                    break;
+                }
+            }
+        }
+
+        Framebuffer::new(FB_ADDR, FB_WIDTH, FB_HEIGHT, FB_PITCH)
+    };
+
+    fb.clear(Color::BLACK);
+    Framebuffer::draw_boot_splash(&mut fb);
+    fb.draw_string(10, 70, "mitosOS System Init...", Color::GREEN);
+
+    // 3. HARDWARE: Start the timer
+    timer::hardware::init();
+    fb.draw_string(10, 80, "Timer: OK", Color::YELLOW);
+
+    // 4. FILESYSTEM: Load the Ramdisk
+    if let Some(_ramdisk) = TarFileSystem::new_embedded() {
+        fb.draw_string(10, 90, "Ramdisk: loaded", Color::CYAN);
+    } else {
+        fb.draw_string(10, 90, "Ramdisk: missing", Color::RED);
+    }
+
+    // 5. USERSPACE: Prepare file descriptor table
+    let mut _root_fd_table = FileDescriptorTable::new();
+
+    // --- FAT32 Mounting (RAM-backed test volume) ---
+    let ram_disk: alloc::boxed::Box<dyn block::BlockDevice> =
+        alloc::boxed::Box::new(block::RamBlockDevice::new(256));
+
+    match crate::fs::fat32::Fat32FileSystem::mount(ram_disk) {
+        Ok(fat_fs) => {
+            let (bps, fats, reserved, spf) = fat_fs.volume_info();
+            let _ = writeln!(
+                uart,
+                "mitosOS: FAT32 volume mounted at /disk ({bps}B/sector, {fats} FAT(s), {reserved} reserved, {spf} sectors/FAT)"
+            );
+            fb.draw_string(10, 100, "FAT32 (ram): mounted", Color::MAGENTA);
+            let fat_adapter = alloc::sync::Arc::new(crate::fs::fat32_adapter::Fat32Adapter::new(fat_fs));
+            crate::fs::vfs::VFS.lock().mount("/disk", fat_adapter);
+        }
+        Err(e) => {
+            let _ = writeln!(uart, "mitosOS: FAT32 mount skipped ({e})");
+            fb.draw_string(10, 100, "FAT32 (ram): skipped", Color::MAGENTA);
+        }
+    }
+
+    // --- FAT32 Mounting (real ATA disk) ---
+    // Self-tests the drive before handing it to the FAT32 layer, then mounts
+    // gracefully -- disk.img in CI is the raw bootable image, not a FAT32
+    // volume, so failure here is the expected path, not a panic.
+    #[cfg(target_arch = "aarch64")]
+    let block_device: Box<dyn crate::block::BlockDevice> = Box::new(crate::block::RamBlockDevice::new(2048));
+
+    #[cfg(target_arch = "x86_64")]
+    let block_device: Box<dyn crate::block::BlockDevice> = {
+        let mut ata_device = crate::fs::ata::AtaDevice::new().expect("Failed to init ATA");
+        match ata_device.self_test() {
+            Ok(()) => {
+                let _ = writeln!(uart, "mitosOS: ATA self-test passed ({} sectors)", ata_device.total_sectors);
+            }
+            Err(e) => {
+                let _ = writeln!(uart, "mitosOS: ATA self-test FAILED: {e}");
+            }
+        }
+        Box::new(ata_device)
+    };
+
+    match crate::fs::fat32::Fat32FileSystem::mount(block_device) {
+        Ok(mut fat32_fs) => match fat32_fs.read_file_by_path("/test.txt") {
+            Ok(content) => {
+                let _ = writeln!(uart, "mitosOS: /test.txt on ATA disk: {} bytes", content.len());
+            }
+            Err(e) => {
+                let _ = writeln!(uart, "mitosOS: ATA /test.txt read skipped ({e})");
+            }
+        },
+        Err(e) => {
+            let _ = writeln!(uart, "mitosOS: ATA FAT32 mount skipped ({e})");
+        }
+    }
+
 
 
     // --- Spawn Background Worker Task ---
