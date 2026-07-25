@@ -216,10 +216,13 @@ impl Framebuffer {
         }
     }
     
-    // Example initialization call inside your graphics setup routine
-pub fn draw_boot_splash(fb: &mut Framebuffer) {
-    fb.draw_rect(10, 10, 200, 50, Color::BLUE);
-}
+       /// Draws a simple bordered logo box in the top-left corner during boot.
+    /// Called once from `kmain` right after the framebuffer is cleared.
+    pub fn draw_boot_splash(fb: &mut Framebuffer) {
+        fb.draw_rect(8, 8, 204, 54, Color::WHITE);  // border
+        fb.draw_rect(10, 10, 200, 50, Color::BLUE);  // fill
+    }
+
 
 
     /// Draws a filled rectangle on screen.
