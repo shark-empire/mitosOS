@@ -135,8 +135,20 @@ impl Fat32FileSystem {
         Ok(Self { device, geometry })
     }
 
+    /// Raw geometry for boot-time diagnostics:
+    /// (bytes_per_sector, num_fats, reserved_sector_count, sectors_per_fat).
+    pub fn volume_info(&self) -> (u16, u8, u16, u32) {
+        (
+            self.geometry.bytes_per_sector,
+            self.geometry.num_fats,
+            self.geometry.reserved_sector_count,
+            self.geometry.sectors_per_fat,
+        )
+    }
+
     #[inline]
     fn cluster_to_sector(&self, cluster: u32) -> usize {
+
         self.geometry.first_data_sector + ((cluster as usize - 2) * self.geometry.sectors_per_cluster as usize)
     }
 
