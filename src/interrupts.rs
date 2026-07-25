@@ -85,6 +85,36 @@ mod imp {
         // Re-arm the AArch64 generic timer on each tick
       unsafe{super::reload_timer()};
     }
+
+    /// Handles a synchronous exception taken at EL1 (kernel mode) --
+    /// a data/instruction abort from a bad kernel pointer, an illegal
+    /// instruction, etc. Not recoverable yet (no fault-recovery logic
+    /// exists), so this just reports what happened instead of the
+    /// previous behavior of silently hanging (`b .`) with no diagnostics.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn handle_el1_sync_exception(esr: u64, far: u64, elr: u64) -> ! {
+        use core::fmt::Write;
+
+        // ESR_EL1[31:26] = Exception Class (EC): what kind of trap this was.
+        let ec = (esr >> 26) & 0x3F;
+        let name = match ec {
+            0x0E => "Illegal Execution State",
+            0x15 => "SVC instruction (unexpected at EL1)",
+            0x20 => "Instruction Abort (from a lower EL)",
+            0x21 => "Instruction Abort (same EL)",
+            0x24 => "Data Abort (from a lower EL)",
+            0x25 => "Data Abort (same EL)",
+            _ => "Unhandled synchronous exception",
+        };
+
+        let mut uart = unsafe { crate::uart::Uart::init() };
+        let _ = writeln!(uart, "\r\n!!! AArch64 EL1 EXCEPTION: {name} (EC=0x{ec:02x}) !!!");
+        let _ = writeln!(uart, "    ESR_EL1 = 0x{esr:016x}");
+        let _ = writeln!(uart, "    FAR_EL1 = 0x{far:016x}  (faulting address)");
+        let _ = writeln!(uart, "    ELR_EL1 = 0x{elr:016x}  (faulting instruction)");
+
+        panic!("Unhandled AArch64 EL1 exception: {name}");
+    }
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -141,6 +171,8 @@ pub unsafe fn reload_timer() {
 // ==========================================
 #[cfg(target_arch = "x86_64")]
 mod imp {
+    use core::fmt::Write;
+
     #[derive(Copy, Clone)]
     #[repr(C, packed)]
     struct IdtEntry {
@@ -188,6 +220,11 @@ mod imp {
         fn uart_handler_stub();
         fn timer_handler_stub();
         fn syscall_handler_stub();
+        fn divide_error_stub();
+        fn invalid_opcode_stub();
+        fn double_fault_stub();
+        fn general_protection_fault_stub();
+        fn page_fault_stub();
     }
 
     unsafe fn pic_outb(port: u16, value: u8) {
@@ -232,7 +269,19 @@ mod imp {
             IDT.entries[0x20].set_handler(timer_handler_stub as *const () as usize);
             IDT.entries[0x24].set_handler(uart_handler_stub as *const () as usize);
             IDT.entries[0x80].set_handler(syscall_handler_stub as *const () as usize);
-            IDT.entries[128].set_handler(crate::interrupts::x86_syscall_trap as *const () as usize);
+
+            // CPU fault handlers -- these used to be entirely unhandled, which
+            // meant any of them firing (a bad pointer deref, a bug in the ELF
+            // loader/page-table code, etc.) triple-faulted the whole VM with
+            // zero diagnostics. Now they print what happened and panic
+            // cleanly instead. (Note: entry 0x80/128 is set only once above --
+            // it used to be overwritten here with an incompatible handler
+            // that bypassed the register-saving stub; that line is gone now.)
+            IDT.entries[0].set_handler(divide_error_stub as *const () as usize);
+            IDT.entries[6].set_handler(invalid_opcode_stub as *const () as usize);
+            IDT.entries[8].set_handler(double_fault_stub as *const () as usize);
+            IDT.entries[13].set_handler(general_protection_fault_stub as *const () as usize);
+            IDT.entries[14].set_handler(page_fault_stub as *const () as usize);
 
 
 
@@ -291,6 +340,67 @@ mod imp {
 
     #[unsafe(no_mangle)]
     pub extern "C" fn generic_exception_handler() {}
+
+    /// Shared handler for CPU faults that previously had no IDT entry at
+    /// all (divide error, invalid opcode, double fault, GPF, page fault).
+    /// None of these are recoverable yet -- there's no user-mode/ring-3
+    /// separation or demand paging in place, so any of these firing today
+    /// means a genuine kernel bug. Print what happened and panic cleanly
+    /// (via the existing `#[panic_handler]`) instead of silently
+    /// triple-faulting the machine.
+    ///
+    /// `error_code` is the real CPU-pushed error code for vectors that have
+    /// one (8, 13, 14, ...), or 0 for vectors that don't (0, 6) -- the
+    /// calling stub pushes a dummy 0 so the stack layout -- and therefore
+    /// this function's view of it -- is uniform either way.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fault_common_handler(vector: u64, error_code: u64, rip: u64) -> ! {
+        let name = match vector {
+            0 => "Divide Error (#DE)",
+            6 => "Invalid Opcode (#UD)",
+            8 => "Double Fault (#DF)",
+            13 => "General Protection Fault (#GP)",
+            14 => "Page Fault (#PF)",
+            _ => "Unhandled Exception",
+        };
+
+        let mut uart = unsafe { crate::uart::Uart::init() };
+        let _ = writeln!(uart, "\r\n!!! CPU EXCEPTION: {name} (vector {vector}) !!!");
+        let _ = writeln!(uart, "    error_code   = 0x{error_code:x}");
+        let _ = writeln!(uart, "    faulting rip = 0x{rip:x}");
+
+        if vector == 14 {
+            // CR2 holds the faulting virtual address for a page fault --
+            // it's a separate control register, untouched by the stub's
+            // GPR pushes, so it's still valid to read here.
+            let cr2: usize;
+            unsafe {
+                core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack));
+            }
+            let present = error_code & 1 != 0;
+            let write = error_code & (1 << 1) != 0;
+            let user = error_code & (1 << 2) != 0;
+            let _ = writeln!(
+                uart,
+                "    fault address (CR2) = 0x{cr2:x}  [{}, {}, {}]",
+                if present { "protection violation" } else { "page not present" },
+                if write { "write" } else { "read" },
+                if user { "user-mode" } else { "supervisor" },
+            );
+        }
+
+        if vector == 13 {
+            let _ = writeln!(
+                uart,
+                "    selector index = {}  [external={}, table={}]",
+                error_code >> 3,
+                error_code & 1 != 0,
+                if error_code & (1 << 1) != 0 { "IDT" } else { "GDT/LDT" },
+            );
+        }
+
+        panic!("Unhandled CPU exception: {name}");
+    }
 }
 
 
@@ -337,6 +447,42 @@ core::arch::global_asm!(
       call syscall_handler
       pop r11; pop r10; pop r9; pop r8; pop rdi; pop rsi; pop rdx; pop rcx; pop rax
       iretq
+
+    // --- CPU fault stubs -----------------------------------------------
+    // fault_common_handler(vector, error_code, rip) never returns (it
+    // panics), so unlike the stubs above these have no pop/iretq epilogue.
+    //
+    // Vectors 8/13/14 have the CPU push a real error code, so it's already
+    // sitting on the stack when the stub starts. Vectors 0/6 don't get one,
+    // so EXC_NOERR pushes a dummy 0 first -- that keeps [rsp+72]/[rsp+80]
+    // (error_code/rip) at the same offsets either way, after the 9 GPR
+    // pushes below.
+    .macro EXC_NOERR name, vector
+    .global \name
+    \name:
+        push 0
+        push rax; push rcx; push rdx; push rsi; push rdi; push r8; push r9; push r10; push r11
+        mov rdi, \vector
+        mov rsi, [rsp + 72]
+        mov rdx, [rsp + 80]
+        call fault_common_handler
+    .endm
+
+    .macro EXC_ERR name, vector
+    .global \name
+    \name:
+        push rax; push rcx; push rdx; push rsi; push rdi; push r8; push r9; push r10; push r11
+        mov rdi, \vector
+        mov rsi, [rsp + 72]
+        mov rdx, [rsp + 80]
+        call fault_common_handler
+    .endm
+
+    EXC_NOERR divide_error_stub, 0
+    EXC_NOERR invalid_opcode_stub, 6
+    EXC_ERR   double_fault_stub, 8
+    EXC_ERR   general_protection_fault_stub, 13
+    EXC_ERR   page_fault_stub, 14
     "#
 );
 
@@ -367,6 +513,17 @@ core::arch::global_asm!(
       // =========================================================
       // 2. Current EL with SP_x (4 vectors, 128 bytes each)
       // =========================================================
+
+      // --- Synchronous Exception Slot (Current EL, SP_x) ---
+      // A kernel-mode data abort, illegal instruction, etc. used to land
+      // here and just `b .` (hang) with zero diagnostics. Dump the
+      // architected syndrome/fault-address/return-address registers and
+      // hand off to Rust instead -- handle_el1_sync_exception never
+      // returns, so there's no need to restore anything below.
+      mrs x0, esr_el1
+      mrs x1, far_el1
+      mrs x2, elr_el1
+      bl handle_el1_sync_exception
       b .
       .balign 128
       
@@ -538,6 +695,18 @@ pub fn init() {
 
 /// Interrupt and Exception Router for mitosOS.
 
+/// Not currently wired to any IDT entry. `IDT.entries[0x80]` is set once,
+/// above, to `syscall_handler_stub` -- the assembly stub that actually
+/// saves/restores registers and matches `syscall_handler`'s calling
+/// convention. This function used to *also* be installed at the same
+/// vector (0x80 == 128), silently overwriting the working stub with a
+/// handler that had no register-save prologue and would corrupt the trap
+/// frame on return. Kept here, unwired, as a starting point if you switch
+/// the syscall path to context-object-based dispatch later -- doing that
+/// safely needs its own assembly stub (like `timer_handler_stub` builds a
+/// `TaskContext`-shaped frame for `run_schedule`) rather than pointing the
+/// IDT straight at a plain `extern "C" fn(&mut TaskContext)`.
+#[allow(dead_code)]
 #[cfg(target_arch = "x86_64")]
 pub extern "C" fn x86_syscall_trap(frame: &mut crate::task::TaskContext) {
     // On x86_64, syscall arguments are typically passed via registers:
