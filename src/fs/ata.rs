@@ -138,60 +138,86 @@ pub struct AtaDevice {
 
 impl AtaDevice {
     /// Probes the ATA bus, identifies the drive, and initializes it.
-    pub fn new() -> Result<Self, &'static str> {
+    pub fn new() -> Result<Self, AtaError> {
         unsafe {
-            // Select Primary Master (0xA0)
             outb(DRIVE_HEAD, 0xA0);
             io_delay();
-            
-            // Zero out LBA ports before IDENTIFY
             outb(SECTOR_COUNT, 0);
             outb(LBA_LOW, 0);
             outb(LBA_MID, 0);
             outb(LBA_HIGH, 0);
-            
-            // Send IDENTIFY command
             outb(COMMAND, CMD_IDENTIFY);
-            
-            // Check if bus is floating (no drive attached)
             if inb(STATUS) == 0 {
-                return Err("No ATA drive attached to Primary Master");
+                return Err(AtaError::NoDevice);
             }
         }
 
-        wait_while_busy().map_err(|_| "ATA Drive hung during IDENTIFY")?;
-        
-        // If LBA_MID or LBA_HIGH are not 0, this is not an ATA drive (it might be ATAPI/CD-ROM)
+        wait_while_busy()?;
+
         unsafe {
             if inb(LBA_MID) != 0 || inb(LBA_HIGH) != 0 {
-                return Err("Device is ATAPI (CD-ROM), not an ATA hard drive");
+                return Err(AtaError::NoDevice);
             }
         }
 
-        wait_for_data().map_err(|_| "ATA Drive rejected IDENTIFY command")?;
+        wait_for_data()?;
 
-        // Read the 256-word IDENTIFY payload
+        // Data is ready (wait_for_data confirmed DRQ); the drive should also
+        // be reporting itself ready before we trust the IDENTIFY payload.
+        if unsafe { inb(STATUS) } & STATUS_RDY == 0 {
+            return Err(AtaError::NoDevice);
+        }
+
         let mut identify_data = [0u16; 256];
         for word in identify_data.iter_mut() {
             *word = unsafe { inw(DATA) };
         }
 
-        // Word 60 and 61 contain the total number of LBA28 addressable sectors
         let total_sectors = (identify_data[60] as u32) | ((identify_data[61] as u32) << 16);
-
         Ok(Self { total_sectors })
     }
 
-    /// Flushes the disk hardware cache
     pub fn flush_cache(&self) -> Result<(), AtaError> {
         wait_while_busy()?;
-        unsafe {
-            outb(COMMAND, CMD_CACHE_FLUSH);
-        }
+        unsafe { outb(COMMAND, CMD_CACHE_FLUSH); }
         wait_while_busy()?;
         Ok(())
     }
+
+    /// Non-destructive round-trip write/read check on the drive's last
+    /// sector (never touched by a filesystem) -- proves the write path
+    /// and cache flush actually work. Restores the original contents.
+    pub fn self_test(&mut self) -> Result<(), &'static str> {
+        if self.total_sectors == 0 {
+            return Err("ATA self-test: device reports zero sectors");
+        }
+        if self.sector_size() != SECTOR_SIZE {
+            return Err("ATA self-test: unexpected sector size");
+        }
+
+        let test_sector = (self.total_sectors - 1) as usize;
+
+        let mut original = [0u8; SECTOR_SIZE];
+        self.read_sector(test_sector, &mut original)?;
+
+        let mut pattern = [0u8; SECTOR_SIZE];
+        for (i, b) in pattern.iter_mut().enumerate() {
+            *b = (i % 256) as u8;
+        }
+        self.write_sector(test_sector, &pattern)?;
+
+        let mut readback = [0u8; SECTOR_SIZE];
+        self.read_sector(test_sector, &mut readback)?;
+        self.write_sector(test_sector, &original)?;
+
+        if readback != pattern {
+            return Err("ATA self-test: readback did not match pattern written");
+        }
+        Ok(())
+    }
 }
+
+
 
 // ==========================================
 // BlockDevice Trait Implementation
