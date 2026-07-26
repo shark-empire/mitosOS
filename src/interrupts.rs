@@ -204,6 +204,17 @@ mod imp {
             self.pointer_high = (handler_addr >> 32) as u32;
             self.reserved = 0;
         }
+
+        /// Selects a TSS Interrupt Stack Table entry (1-7) for this gate,
+        /// so the CPU switches to that dedicated stack instead of the
+        /// current RSP0 when the vector fires. `0` means "don't use an
+        /// IST stack" (the default `set_handler` leaves it at). Used for
+        /// the double-fault gate (src/gdt.rs sets up IST1) so a corrupted
+        /// or overflowed kernel stack doesn't also crash the handler
+        /// that's supposed to report it.
+        fn set_ist(&mut self, index: u8) {
+            self.options = (self.options & 0xFF00) | (index as u16 & 0x7);
+        }
     }
 
     #[repr(align(16))]
@@ -280,6 +291,9 @@ mod imp {
             IDT.entries[0].set_handler(divide_error_stub as *const () as usize);
             IDT.entries[6].set_handler(invalid_opcode_stub as *const () as usize);
             IDT.entries[8].set_handler(double_fault_stub as *const () as usize);
+            // Dedicated stack for #DF -- see gdt::init(), which points TSS
+            // IST1 at DOUBLE_FAULT_STACK before this runs.
+            IDT.entries[8].set_ist(1);
             IDT.entries[13].set_handler(general_protection_fault_stub as *const () as usize);
             IDT.entries[14].set_handler(page_fault_stub as *const () as usize);
 
