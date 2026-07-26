@@ -25,6 +25,8 @@ pub mod version;
 pub mod addr;
 #[cfg(target_arch = "x86_64")]
 pub mod pci;
+#[cfg(target_arch = "x86_64")]
+pub mod gdt;
 
 
 use core::fmt::Write;
@@ -44,10 +46,17 @@ pub extern "C" fn kmain() -> ! {
     let mut uart = unsafe { uart::Uart::init() };
 
     unsafe {
-        // 1. Install IDT/Vector table so the CPU can handle exceptions & IRQs.
+        // 1. Load the kernel's own GDT/TSS (ring-3 segments + the stack
+        //    the CPU uses on any trap taken from ring 3). Must run before
+        //    interrupts::init() -- the double-fault gate is set to use
+        //    IST1, which this sets up.
+        #[cfg(target_arch = "x86_64")]
+        gdt::init();
+
+        // 2. Install IDT/Vector table so the CPU can handle exceptions & IRQs.
         interrupts::init();
 
-        // 2. Initialize the heap allocator subsystem.
+        // 3. Initialize the heap allocator subsystem.
         // (Ensures .bss doesn't collide with 0x150_000 as kernel grows).
         memory::init_memory_subsystem(0x150_000, 0xA0_000);
 
@@ -121,71 +130,13 @@ if let Some(frame) = crate::memory::alloc_frame() {
 
     // 1. MEMORY: Protect bootloader memory and set flags
     unsafe {
-        protect_boot_memory(0x100000); // 0x100000 is a placeholder kernel end address
+        // TODO: replace the placeholder with the real kernel end address
+        // (e.g. an extern "C" linker symbol like `_kernel_end`), or the PMM
+        // will hand out physical frames that overlap the running kernel.
+        protect_boot_memory(0x100000);
         let _code = MapFlags::kernel_code();
         let _data = MapFlags::kernel_data();
     }
-
-    // 2. GRAPHICS: Initialize the screen
-    unsafe {
-        // Placeholders for framebuffer address, width, height, and pitch
-        let mut fb = Framebuffer::new(0xFD000000, 1024, 768, 4096);
-        fb.clear(Color::BLACK);
-        fb.draw_string(10, 10, "mitosOS System Init...", Color::GREEN);
-    }
-
-    // 3. HARDWARE: Start the timer
-   timer::hardware::init();
-
-
-    // 4. FILESYSTEM: Load the Ramdisk
-    if let Some(_ramdisk) = TarFileSystem::new_embedded() {
-        // Ramdisk successfully loaded into memory
-    }
-
-    // 5. USERSPACE: Prepare file descriptor table
-    let mut _root_fd_table = FileDescriptorTable::new();
-
-    // --- FAT32 Mounting (RAM-backed test volume) ---
-    // RamBlockDevice starts zeroed, so mount() will fail with "Invalid boot
-    // sector signature" until real FAT32 bytes are written into it -- either
-    // seed it from an embedded test image, or swap RamBlockDevice for a real
-    // disk once fs::ata's BlockDevice impl is ready. That failure path is
-    // expected right now, not a bug -- it's handled below, not panicking.
-    //
-    // 256 sectors = 128KB, sized to comfortably fit your ~640KB heap. A real
-    // FAT32 volume needs far more than that in practice, so treat this as
-    // "prove the wiring works," not a production-sized mount.
-    let ram_disk: alloc::boxed::Box<dyn block::BlockDevice> =
-        alloc::boxed::Box::new(block::RamBlockDevice::new(256));
-
-    match crate::fs::fat32::Fat32FileSystem::mount(ram_disk) {
-        Ok(fat_fs) => {
-            let fat_adapter = alloc::sync::Arc::new(crate::fs::fat32_adapter::Fat32Adapter::new(fat_fs));
-            crate::fs::vfs::VFS.lock().mount("/disk", fat_adapter);
-            let _ = writeln!(uart, "mitosOS: FAT32 volume mounted at /disk");
-        }
-        Err(e) => {
-            let _ = writeln!(uart, "mitosOS: FAT32 mount skipped ({e})");
-        }
-    }
-    
-    // In src/main.rs or a storage initialization function:
-// To this (using an available ATA device or block device initializer):
-#[cfg(target_arch = "x86_64")]
-let ata_device = crate::fs::ata::AtaDevice::new(); // Or your specific initialization method
-// src/main.rs around line 134–136
-
-
-#[cfg(target_arch = "aarch64")]
-let block_device: Box<dyn crate::block::BlockDevice> = Box::new(crate::block::RamBlockDevice::new(2048));
-
-#[cfg(target_arch = "x86_64")]
-let block_device: Box<dyn crate::block::BlockDevice> = Box::new(crate::fs::ata::AtaDevice::new().expect("Failed to init ATA"));
-
-let mut fat32_fs = crate::fs::fat32::Fat32FileSystem::mount(block_device)
-    .expect("FAT32 mount failed");
-
 
     // 2. GRAPHICS: Initialize the screen
     const FB_ADDR: usize = 0xFD000000;
