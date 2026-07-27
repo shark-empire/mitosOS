@@ -154,7 +154,14 @@ protected_mode_start:
 
     mov ecx, 0xC0000080         ; EFER MSR
     rdmsr
-    or eax, 0x100                ; EFER.LME
+    or eax, 0x100                ; EFER.LME (Long Mode Enable)
+    or eax, 0x800                ; EFER.NXE (No-Execute Enable) -- without
+                                  ; this, bit 63 of a PTE (the NX bit) is a
+                                  ; *reserved* bit that must be 0, not an
+                                  ; execute-disable flag. Any map_page call
+                                  ; with execute_disable: true then sets a
+                                  ; reserved bit -> #PF with the RSVD flag
+                                  ; set in the error code (bit 3, i.e. 0x8).
     wrmsr
 
     mov eax, cr0
