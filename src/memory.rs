@@ -258,13 +258,35 @@ pub unsafe fn map_page(page_table_root: usize, vaddr: usize, paddr: usize) -> Re
 }
 
 
-/// Protects boot and kernel memory from being allocated by the VMM
-pub unsafe fn protect_boot_memory(kernel_end_addr: usize) {
+/// Protects boot and kernel memory from being allocated by the VMM.
+///
+/// `kernel_end_addr` should be the *real* end of the kernel's own image
+/// (e.g. the linker-provided `_kernel_end` symbol), not a guess -- this
+/// used to be called with a hardcoded `0x100000` placeholder, which is
+/// actually where the kernel *starts*. That left the frame allocator
+/// free to hand out the very first physical frame it owns (the kernel's
+/// own code/data), silently corrupting the running kernel the moment
+/// anything called `vmm_alloc_frame()` for a new page table, an ELF
+/// segment, a DMA buffer, etc.
+///
+/// `heap_start`/`heap_size` should match whatever's passed to
+/// `init_memory_subsystem` -- the heap lives at a fixed physical range
+/// too (this kernel has no higher-half split, so physical == virtual
+/// here), and the frame allocator needs to know to stay out of it for
+/// the same reason.
+pub unsafe fn protect_boot_memory(kernel_end_addr: usize, heap_start: usize, heap_size: usize) {
     let mut pmm = PHYSICAL_PMM.lock();
     pmm.reserve_range(0, 256); // Reserve first 1MB (BIOS/Stage1/Stage2)
+
     let kernel_end_frame = (kernel_end_addr + 4095) / 4096;
     if kernel_end_frame > 256 {
         pmm.reserve_range(256, kernel_end_frame - 256);
+    }
+
+    let heap_start_frame = heap_start / PAGE_SIZE;
+    let heap_end_frame = (heap_start + heap_size + PAGE_SIZE - 1) / PAGE_SIZE;
+    if heap_end_frame > heap_start_frame {
+        pmm.reserve_range(heap_start_frame, heap_end_frame - heap_start_frame);
     }
 }
 
@@ -293,7 +315,25 @@ pub unsafe fn create_process_page_table() -> Option<usize> {
         let new_root = root_frame as *mut u64;
         
         unsafe { 
-            for i in 256..512 {
+            // This kernel has no higher-half split: it's identity-mapped
+            // starting at 0x100000, and ELF segments load around
+            // 0x400000+ -- everything lives in the LOW half of the
+            // address space (PML4 entries 0..256), not 256..512. This
+            // used to copy 256..512, which is empty here, leaving a
+            // freshly spawned process's page table with *nothing* mapped
+            // -- the instant the scheduler switched CR3 to it, the very
+            // next instruction fetch (still running kernel code, at a
+            // low-half address) had nowhere to translate through and
+            // would fault immediately.
+            //
+            // Note: this shares the underlying page-table structures
+            // with the parent, not just the mappings -- fine for a
+            // single isolated process, but two processes (or a process
+            // and the kernel) both extending the *same* shared PD entry
+            // for their own private mappings would step on each other.
+            // Worth revisiting with a proper private low-memory region
+            // per process before running multiple concurrent ones.
+            for i in 0..256 {
                 new_root.add(i).write(active_root.add(i).read());
             }
         }
