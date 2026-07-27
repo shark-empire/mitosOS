@@ -156,6 +156,13 @@ unsafe fn map_and_copy_segment(
             let phys_frame = crate::memory::vmm_alloc_frame()
                 .ok_or("Out of memory: failed to allocate frame for ELF segment")?;
 
+            // vmm_alloc_frame() doesn't zero the frame it hands back --
+            // without this, the tail of a segment where memsz > filesz
+            // (the usual .bss zero-fill part) or a pure-.bss PT_LOAD
+            // segment (filesz == 0) would contain whatever was already
+            // sitting in that physical frame instead of zeros.
+            core::ptr::write_bytes(phys_frame as *mut u8, 0, PAGE_SIZE);
+
             crate::vmm::arch::map_page(root, current_vaddr, phys_frame, map_flags)
                 .map_err(|_| "Failed to map page for ELF segment")?;
 
@@ -165,7 +172,18 @@ unsafe fn map_and_copy_segment(
             let bytes_to_copy = core::cmp::min(bytes_left_in_data, PAGE_SIZE - copy_start_in_page);
 
             if bytes_to_copy > 0 {
-                let dest_ptr = (current_vaddr + copy_start_in_page) as *mut u8;
+                // Write through the physical frame directly, not
+                // current_vaddr. current_vaddr is only valid once *this*
+                // process's page table is the active one (CR3) -- which
+                // it isn't yet here, we're still running under whatever
+                // called spawn_from_elf. phys_frame is a physical address
+                // within the kernel's own identity-mapped low memory, so
+                // it's dereferenceable right now regardless of which
+                // page table is active. (This relies on the frame
+                // allocator staying within the identity-mapped range --
+                // currently the first 4MB; see the memory-audit notes on
+                // extending that if allocations ever grow past it.)
+                let dest_ptr = (phys_frame + copy_start_in_page) as *mut u8;
                 core::ptr::copy_nonoverlapping(
                     data[data_offset..data_offset + bytes_to_copy].as_ptr(),
                     dest_ptr,
