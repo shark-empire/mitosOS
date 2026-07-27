@@ -61,8 +61,48 @@ pub struct KernelHal {
 }
 
 impl crate::drivers::ahci::Hal for KernelHal {
-    unsafe fn map_mmio(&mut self, phys:  PhysAddr, _size: usize) -> VirtAddr {
-         VirtAddr::new(phys.as_u64() + self.phys_mem_offset)
+    unsafe fn map_mmio(&mut self, phys: PhysAddr, size: usize) -> VirtAddr {
+        // This used to just return phys + phys_mem_offset (with offset
+        // always 0) and treat that as a valid, dereferenceable address --
+        // but nothing had ever created a page-table entry for it. AHCI's
+        // ABAR lives way out in the PCI MMIO hole (e.g. 0xFEBB1000, ~4GB),
+        // nowhere near the kernel's identity-mapped low RAM, so the first
+        // register read through the "mapped" address faulted (#PF, page
+        // not present) the moment anything actually dereferenced it.
+        //
+        // This kernel identity-maps everything (virt == phys) rather than
+        // using a separate physmap offset, so phys_mem_offset staying 0 is
+        // consistent -- the fix is actually creating the mapping, not the
+        // address arithmetic.
+        let phys_addr = phys.as_u64() as usize;
+        let page_start = phys_addr & !0xFFF;
+        let page_end = (phys_addr + size.max(1) + 0xFFF) & !0xFFF;
+
+        let current_root: usize;
+        unsafe {
+            core::arch::asm!("mov {}, cr3", out(reg) current_root, options(nomem, nostack));
+        }
+        let root = (current_root & !0xFFF) as *mut crate::vmm::arch::PageTable;
+
+        let flags = crate::memory::MapFlags {
+            writable: true,
+            user_accessible: false,
+            execute_disable: true,
+        };
+
+        let mut page = page_start;
+        while page < page_end {
+            unsafe {
+                // AlreadyMapped just means an earlier call (a previous
+                // device, or an overlapping page from the same BAR)
+                // already covers this page -- not an error worth
+                // surfacing here, the mapping we want already exists.
+                let _ = crate::vmm::arch::map_page(root, page, page, flags);
+            }
+            page += 0x1000;
+        }
+
+        VirtAddr::new(phys_addr as u64)
     }
 
     unsafe fn alloc_dma(&mut self, size: usize) -> Option<(PhysAddr, VirtAddr)> {
