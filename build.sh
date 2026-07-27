@@ -3,7 +3,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 STAGE2_MAX_BYTES=32768      # 64 sectors × 512 — must match STAGE2_SECTOR_COUNT in stage1.s
-KERNEL_MAX_BYTES=131072     # 256 sectors × 512 — must match KERNEL_SECTOR_COUNT in stage2.s
+KERNEL_MAX_BYTES=393216    # 768 sectors × 512 — must match KERNEL_TOTAL_SECTORS in stage2.s
 RAMDISK_MAX_BYTES=131072    # 256 sectors × 512 — must match RAMDISK_TOTAL_SECTORS in stage2.s
 KERNEL_TARGET=x86_64-unknown-none
 
@@ -57,13 +57,13 @@ cp "$KERNEL_BIN" kernel.bin
 KERNEL_SIZE=$(stat -c%s kernel.bin 2>/dev/null || stat -f%z kernel.bin)
 if [ "$KERNEL_SIZE" -gt "$KERNEL_MAX_BYTES" ]; then
     echo "ERROR: kernel.bin is $KERNEL_SIZE bytes, exceeds ${KERNEL_MAX_BYTES}-byte budget" >&2
-    echo "       bump KERNEL_SECTOR_COUNT in stage2.s if intentional" >&2
+    echo "       bump KERNEL_TOTAL_SECTORS in stage2.s if intentional" >&2
     exit 1
 fi
 truncate -s "$KERNEL_MAX_BYTES" kernel.bin
 
 echo "==> Building disk image (stage1 + stage2 + kernel + ramdisk)"
-# Because we strictly padded everything, concatenating them places rootfs.tar exactly at LBA 321!
+# Because we strictly padded everything, concatenating them places rootfs.tar exactly at LBA 833!
 cat stage1.bin stage2.bin kernel.bin rootfs.tar > disk.img
 
 echo "==> Done: disk.img ready"
