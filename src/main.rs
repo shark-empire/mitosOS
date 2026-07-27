@@ -71,6 +71,14 @@ pub extern "C" fn kmain() -> ! {
         // (Ensures .bss doesn't collide with 0x150_000 as kernel grows).
         memory::init_memory_subsystem(HEAP_START, HEAP_SIZE);
 
+        // 3b. Reserve boot/kernel/heap memory in the frame allocator.
+        // This has to happen right here, before *anything* else gets a
+        // chance to call vmm_alloc_frame() -- it used to run much later
+        // (after PCI scan, a demo allocation, and AHCI init), so all of
+        // those were freely handing out frames from the "reserved" range,
+        // including frame 0 itself.
+        protect_boot_memory(&raw const _kernel_end as usize, HEAP_START, HEAP_SIZE);
+
         // 3. Unmask the UART's interrupt line.
         uart.enable_interrupts();
 
@@ -139,9 +147,9 @@ if let Some(frame) = crate::memory::alloc_frame() {
         let _ = writeln!(uart, "mitosOS: WARN - No valid initrd found.");
     }
 
-    // 1. MEMORY: Protect bootloader memory and set flags
+    // 1. MEMORY: flags demo (actual protect_boot_memory now runs right
+    // after heap init, near the top of kmain -- see above)
     unsafe {
-        protect_boot_memory(&raw const _kernel_end as usize, HEAP_START, HEAP_SIZE);
         let _code = MapFlags::kernel_code();
         let _data = MapFlags::kernel_data();
     }
