@@ -81,7 +81,7 @@ fn run_command(uart: &mut Uart, line: &str, history: &[String], ramdisk: &Option
         "help" => {
             let _ = writeln!(
                 uart,
-                "commands: help, about, uname, ps, echo <text>, history, memstat, panic, ls, cat <file>, stat <file>, raw <file>, rxtest, diskread <lba> [count]"
+                "commands: help, about, uname, ps, echo <text>, history, memstat, panic, ls, cat <file>, stat <file>, raw <file>, rxtest, diskread <lba> [count], run <file>"
             );
         }
         "about" => {
@@ -293,6 +293,61 @@ fn run_command(uart: &mut Uart, line: &str, history: &[String], ramdisk: &Option
                 let _ = writeln!(uart, "size: {} bytes", meta.size);
             } else {
                 let _ = writeln!(uart, "Error: '{}' not found in VFS.", target_file);
+            }
+        }
+        "run" => {
+            if args.len() < 2 {
+                let _ = writeln!(uart, "Usage: run <file>");
+                return;
+            }
+
+            #[cfg(target_arch = "x86_64")]
+            {
+                let target_file = args[1];
+                let vfs = crate::fs::vfs::VFS.lock();
+                let node = match vfs.open(target_file) {
+                    Some(n) => n,
+                    None => {
+                        let _ = writeln!(uart, "Error: '{}' not found in VFS.", target_file);
+                        return;
+                    }
+                };
+                let meta = node.metadata();
+                let mut buffer = alloc::vec![0u8; meta.size];
+                let bytes_read = match node.read(0, &mut buffer) {
+                    Ok(n) => n,
+                    Err(e) => {
+                        let _ = writeln!(uart, "Error reading file: {}", e);
+                        return;
+                    }
+                };
+                // node is an Arc, not borrowed from vfs -- safe to release
+                // the lock before spawning, since load_elf_to_process /
+                // spawn_from_elf never touch the VFS themselves and there's
+                // no reason to hold it while they run.
+                drop(vfs);
+
+                let _ = writeln!(uart, "Loading '{}' ({} bytes)...", target_file, bytes_read);
+                if crate::task::spawn_from_elf(&buffer[..bytes_read]) {
+                    let _ = writeln!(uart, "Spawned as a new isolated (ring-3) process -- check 'ps'.");
+                } else {
+                    let _ = writeln!(
+                        uart,
+                        "Failed to spawn '{}'. Common causes right now: no free task slot \
+                         (MAX_TASKS is 4, and two are already used by the background workers), \
+                         or the ELF failed to load/map -- see task.rs::spawn_from_elf.",
+                        target_file
+                    );
+                }
+            }
+
+            #[cfg(not(target_arch = "x86_64"))]
+            {
+                let _ = writeln!(
+                    uart,
+                    "run: ring-3 process spawning isn't wired up on this architecture yet \
+                     (see the AArch64 notes in task.rs::Task::init and allocate_user_stack)."
+                );
             }
         }
         "raw" => {
