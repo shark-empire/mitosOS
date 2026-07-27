@@ -36,11 +36,14 @@ const TSS_SELECTOR: u16 = 0x28;
 /// IST field (see interrupts.rs's new `set_ist`) uses 1-based numbering
 /// (IST1..IST7), so ist[DOUBLE_FAULT_IST_INDEX] == "IST1".
 const DOUBLE_FAULT_IST_INDEX: usize = 0;
-const DOUBLE_FAULT_IST_NUMBER: u8 = 1;
+pub const DOUBLE_FAULT_IST_NUMBER: u8 = 1;
 
 const DF_STACK_SIZE: usize = 8192;
 
 #[repr(align(16))]
+#[allow(dead_code)] // only ever written (zero-init) and address-taken -- the
+                     // CPU reads this memory directly as the IST1 stack
+                     // during a double fault, never through Rust code
 struct IstStack([u8; DF_STACK_SIZE]);
 static mut DOUBLE_FAULT_STACK: IstStack = IstStack([0; DF_STACK_SIZE]);
 
