@@ -293,7 +293,7 @@ mod imp {
             IDT.entries[8].set_handler(double_fault_stub as *const () as usize);
             // Dedicated stack for #DF -- see gdt::init(), which points TSS
             // IST1 at DOUBLE_FAULT_STACK before this runs.
-            IDT.entries[8].set_ist(1);
+            IDT.entries[8].set_ist(crate::gdt::DOUBLE_FAULT_IST_NUMBER);
             IDT.entries[13].set_handler(general_protection_fault_stub as *const () as usize);
             IDT.entries[14].set_handler(page_fault_stub as *const () as usize);
 
