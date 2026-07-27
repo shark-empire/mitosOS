@@ -14,6 +14,8 @@ pub const ATTR_HIDDEN: u8 = 0x02;
 pub const ATTR_SYSTEM: u8 = 0x04;
 pub const ATTR_VOLUME_ID: u8 = 0x08;
 pub const ATTR_DIRECTORY: u8 = 0x10;
+#[allow(dead_code)] // part of the complete FAT32 attribute set; unused until
+                     // something displays archive flags (e.g. a future `ls -l`)
 pub const ATTR_ARCHIVE: u8 = 0x20;
 pub const ATTR_LONG_NAME: u8 = ATTR_READ_ONLY | ATTR_HIDDEN | ATTR_SYSTEM | ATTR_VOLUME_ID;
 
