@@ -37,6 +37,17 @@ use crate::fd::FileDescriptorTable;
 use crate::ramdisk::TarFileSystem;
 use alloc::boxed::Box;
 
+const HEAP_START: usize = 0x150_000;
+const HEAP_SIZE: usize = 0xA0_000;
+
+// Provided by linker_x86.ld / linker_rpi.ld: marks the real end of the
+// kernel's own image (code+rodata+data+bss). Used by protect_boot_memory
+// so the frame allocator never hands out a frame inside the kernel
+// itself -- see the comment there for what used to go wrong without it.
+unsafe extern "C" {
+    static _kernel_end: u8;
+}
+
 
 
 
@@ -58,7 +69,7 @@ pub extern "C" fn kmain() -> ! {
 
         // 3. Initialize the heap allocator subsystem.
         // (Ensures .bss doesn't collide with 0x150_000 as kernel grows).
-        memory::init_memory_subsystem(0x150_000, 0xA0_000);
+        memory::init_memory_subsystem(HEAP_START, HEAP_SIZE);
 
         // 3. Unmask the UART's interrupt line.
         uart.enable_interrupts();
@@ -130,10 +141,7 @@ if let Some(frame) = crate::memory::alloc_frame() {
 
     // 1. MEMORY: Protect bootloader memory and set flags
     unsafe {
-        // TODO: replace the placeholder with the real kernel end address
-        // (e.g. an extern "C" linker symbol like `_kernel_end`), or the PMM
-        // will hand out physical frames that overlap the running kernel.
-        protect_boot_memory(0x100000);
+        protect_boot_memory(&raw const _kernel_end as usize, HEAP_START, HEAP_SIZE);
         let _code = MapFlags::kernel_code();
         let _data = MapFlags::kernel_data();
     }
@@ -243,8 +251,8 @@ if let Some(frame) = crate::memory::alloc_frame() {
 
 
     // --- Spawn Background Worker Task ---
-    crate::task::spawn(background_worker, crate::task::ExecutionMode::SharedThread);
-    crate::task::spawn(background_worker_2, crate::task::ExecutionMode::SharedThread);
+    crate::task::spawn(background_worker, crate::task::ExecutionMode::SharedThread, 0);
+    crate::task::spawn(background_worker_2, crate::task::ExecutionMode::SharedThread, 0);
 
     // --- Start Kernel Shell ---
     shell::run(&mut uart, inited);
