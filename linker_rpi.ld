@@ -27,6 +27,10 @@ SECTIONS
         __bss_end = .;
     }
 
+    /* See linker_x86.ld -- same idea, kept for parity even though
+       AArch64's memory.rs doesn't reserve this range yet. */
+    _kernel_end = .;
+
     /DISCARD/ : {
         *(.comment)
         *(.eh_frame)
