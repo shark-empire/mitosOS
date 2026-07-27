@@ -86,6 +86,17 @@ pub struct Task {
     pub state: TaskState,
     pub mailbox: Option<Message>, 
     stack: TaskStack,
+    /// This task's own kernel-mode stack. A `SharedThread` never uses
+    /// anything else -- unchanged from before this field existed. An
+    /// `IsolatedProcess` running in ring 3 uses `stack` as its *user*
+    /// context's launch pad (see Task::init) and this as the stack the
+    /// CPU switches to (via TSS.RSP0) on any trap taken while it's in
+    /// ring 3. Needs to be per-task: two ring-3 tasks sharing one kernel
+    /// stack could stomp on each other the moment one of them yields or
+    /// blocks mid-trap (e.g. inside a blocking syscall) and the
+    /// scheduler picks the other.
+    #[cfg(target_arch = "x86_64")]
+    kernel_stack: TaskStack,
 }
 
 impl Task {
@@ -99,18 +110,24 @@ impl Task {
             mailbox: None,
             stack: TaskStack([0; STACK_SIZE]),
             fd_table: None,
+            #[cfg(target_arch = "x86_64")]
+            kernel_stack: TaskStack([0; STACK_SIZE]),
         }
     }
 
 
 
     /// Initializes the stack frame, registers, and memory boundaries for a new task.
+    ///
+    /// `user_stack_top` is only meaningful for `ExecutionMode::IsolatedProcess`
+    /// -- pass `0` for `SharedThread` (kernel-mode tasks don't have one).
     pub fn init(
         &mut self, 
         id: usize, 
         entry: extern "C" fn() -> !, 
         mode: ExecutionMode, 
-        parent_memory_root: usize
+        parent_memory_root: usize,
+        user_stack_top: usize,
     ) {
         self.id = id;
         self.parent_id = if mode == ExecutionMode::SharedThread { id } else { id };
@@ -124,27 +141,42 @@ impl Task {
             }
         };
 
+        // `stack` is where the very first resume-frame lives either way
+        // -- that's what makes the *first* switch into any task, ring-3
+        // or not, go through the exact same generic scheduler path as
+        // any other switch (see run_schedule). For a ring-3 task, `stack`
+        // becomes its kernel_stack in every sense after this: it's what
+        // TSS.RSP0 will point at (run_schedule sets that on every
+        // switch), and the CPU only ever touches it again on a trap back
+        // into the kernel -- actual execution happens on user_stack_top.
         let stack_top = self.stack.0.as_ptr() as usize + STACK_SIZE;
         let aligned_top = stack_top & !0xF;
         let frame_ptr = (aligned_top - core::mem::size_of::<TaskContext>()) as *mut TaskContext;
 
         #[cfg(target_arch = "x86_64")]
         unsafe {
+            let is_user = mode == ExecutionMode::IsolatedProcess && user_stack_top != 0;
             frame_ptr.write(TaskContext {
                 r15: 0, r14: 0, r13: 0, r12: 0,
                 r11: 0, r10: 0, r9: 0,  r8: 0,
                 rbp: 0, rdi: 0, rsi: 0, rdx: 0,
                 rcx: 0, rbx: 0, rax: 0,
                 rip: entry as usize,
-                cs: 0x08,              
-                rflags: 0x202,         
-                rsp: stack_top,
-                ss: 0x10,              
+                cs: if is_user { crate::gdt::USER_CODE_SELECTOR as usize } else { 0x08 },
+                rflags: 0x202,
+                rsp: if is_user { user_stack_top } else { stack_top },
+                ss: if is_user { crate::gdt::USER_DATA_SELECTOR as usize } else { 0x10 },
             });
         }
 
         #[cfg(target_arch = "aarch64")]
         unsafe {
+            // AArch64 ring-3 (EL0) execution isn't wired up yet -- every
+            // task still runs at EL1h regardless of `mode`. The
+            // synchronous-exception vector for traps from EL0 already
+            // exists (interrupts.rs), so this is mainly SPSR/TTBR0 work
+            // when it's time to do this architecture too.
+            let _ = user_stack_top;
             frame_ptr.write(TaskContext {
                 regs: [0; 31],
                 spsr: 0x05,            
@@ -154,6 +186,13 @@ impl Task {
         }
 
         self.sp = frame_ptr as usize;
+    }
+
+    /// Top of this task's kernel stack -- the value TSS.RSP0 should hold
+    /// while this task is the one running (see run_schedule).
+    #[cfg(target_arch = "x86_64")]
+    fn kernel_stack_top(&self) -> usize {
+        (self.kernel_stack.0.as_ptr() as usize + STACK_SIZE) & !0xF
     }
 }
 
@@ -250,13 +289,15 @@ fn current_memory_root() -> usize {
 }
 
 /// Prepares a new task with its own stack and initial entry point function.
-pub fn spawn(entry_point: extern "C" fn() -> !, mode: ExecutionMode) -> bool {
+/// `user_stack_top` is only meaningful for `ExecutionMode::IsolatedProcess`
+/// -- pass `0` for ordinary kernel-mode (`SharedThread`) tasks.
+pub fn spawn(entry_point: extern "C" fn() -> !, mode: ExecutionMode, user_stack_top: usize) -> bool {
     unsafe {
         let parent_root = current_memory_root();
 
         for i in 0..MAX_TASKS {
             if TASKS[i].state == TaskState::Terminated {
-                TASKS[i].init(i, entry_point, mode, parent_root);
+                TASKS[i].init(i, entry_point, mode, parent_root, user_stack_top);
 
                 if !TASK_INITIALIZED.load(Ordering::Acquire) {
                     TASKS[0].state = TaskState::Running;
@@ -276,9 +317,9 @@ pub fn spawn(entry_point: extern "C" fn() -> !, mode: ExecutionMode) -> bool {
 /// from an ELF image -- rather than a named Rust function. The transmute is
 /// valid because callers (currently only the ELF loader) have already
 /// verified this is x86_64/aarch64 machine code that never returns.
-pub fn spawn_at(entry_addr: usize, mode: ExecutionMode) -> bool {
+pub fn spawn_at(entry_addr: usize, mode: ExecutionMode, user_stack_top: usize) -> bool {
     let entry_point: extern "C" fn() -> ! = unsafe { core::mem::transmute(entry_addr) };
-    spawn(entry_point, mode)
+    spawn(entry_point, mode, user_stack_top)
 }
 
 
@@ -290,7 +331,57 @@ fn allocate_isolated_page_table(parent_root: usize) -> usize {
     
 }
 
-/// Spawns a new isolated process from an ELF binary in memory
+/// Maps a small stack for an isolated process's ring-3 code, in that
+/// process's *own* page table -- user-accessible, writable, non-executable.
+/// There wasn't one at all before this; every task ran on `stack` (plain
+/// kernel memory, never user-accessible) regardless of mode. Returns the
+/// *top* of the stack (stacks grow down towards lower addresses).
+///
+/// The address is fixed and arbitrary for now -- chosen well clear of
+/// where an ELF is conventionally loaded (0x400000+) so the two don't
+/// collide for a single process. It does *not* yet account for two
+/// processes both wanting this same address (see the aliasing note on
+/// create_process_page_table in memory.rs) -- fine for one process at a
+/// time, worth revisiting alongside that.
+#[cfg(target_arch = "x86_64")]
+fn allocate_user_stack(page_table_root: usize) -> Option<usize> {
+    const USER_STACK_TOP: usize = 0x1000_0000; // 256MB
+    const USER_STACK_PAGES: usize = 4; // 16KB
+    const PAGE_SIZE: usize = 4096;
+
+    let root = page_table_root as *mut crate::vmm::arch::PageTable;
+    let flags = crate::memory::MapFlags {
+        writable: true,
+        user_accessible: true,
+        execute_disable: true,
+    };
+
+    let stack_bottom = USER_STACK_TOP - USER_STACK_PAGES * PAGE_SIZE;
+    for i in 0..USER_STACK_PAGES {
+        let vaddr = stack_bottom + i * PAGE_SIZE;
+        let phys = crate::memory::vmm_alloc_frame()?;
+        unsafe {
+            // Zeroed for the same reason elf.rs zeroes segment frames --
+            // otherwise a fresh stack starts out full of whatever
+            // garbage was already in that physical frame.
+            core::ptr::write_bytes(phys as *mut u8, 0, PAGE_SIZE);
+            crate::vmm::arch::map_page(root, vaddr, phys, flags).ok()?;
+        }
+    }
+
+    Some(USER_STACK_TOP)
+}
+
+/// AArch64 ring-3 (EL0) execution isn't wired up yet -- see the note in
+/// Task::init. Nothing calls spawn_from_elf on this architecture yet, so
+/// this just makes it fail cleanly (`None`) instead of silently mapping a
+/// stack that would never actually get used from EL0.
+#[cfg(target_arch = "aarch64")]
+fn allocate_user_stack(_page_table_root: usize) -> Option<usize> {
+    None
+}
+
+/// Spawns a new isolated process from an ELF binary in memory.
 pub fn spawn_from_elf(elf_bytes: &[u8]) -> bool {
     let parent_root = current_memory_root();
     
@@ -298,11 +389,21 @@ pub fn spawn_from_elf(elf_bytes: &[u8]) -> bool {
     let page_table_root = allocate_isolated_page_table(parent_root);
     
     // 2. Load the ELF into that new memory space
-    let entry_point = crate::elf::load_elf_to_process(elf_bytes, page_table_root)
-        .expect("ELF load failed");
-        
-    // 3. Spawn the task using the entry address returned by the ELF loader
-    spawn_at(entry_point, ExecutionMode::IsolatedProcess)
+    let entry_point = match crate::elf::load_elf_to_process(elf_bytes, page_table_root) {
+        Ok(ep) => ep,
+        Err(_e) => return false,
+    };
+
+    // 3. Give it a real ring-3 stack, mapped into its own page table --
+    //    see allocate_user_stack for why this didn't exist before.
+    let user_stack_top = match allocate_user_stack(page_table_root) {
+        Some(top) => top,
+        None => return false,
+    };
+
+    // 4. Spawn the task using the entry address returned by the ELF loader
+    //    and the stack just mapped for it.
+    spawn_at(entry_point, ExecutionMode::IsolatedProcess, user_stack_top)
 }
 
 
@@ -377,6 +478,17 @@ pub extern "C" fn run_schedule(current_sp: usize) -> usize {
                     #[cfg(target_arch = "aarch64")]
                     core::arch::asm!("msr ttbr0_el1, {}; isb", in(reg) next_root, options(nostack, preserves_flags));
                 }
+
+                // RSP0 has to reflect whichever task is about to run,
+                // every switch -- not just when the address space
+                // changes. A kernel-mode (SharedThread) task never
+                // actually consults it (same-privilege traps don't
+                // switch stacks), but a ring-3 task's very first trap
+                // back into the kernel needs this already pointing at
+                // *its* kernel_stack, not whatever was there from the
+                // previously running task.
+                #[cfg(target_arch = "x86_64")]
+                crate::gdt::set_kernel_stack(TASKS[next_idx].kernel_stack_top() as u64);
 
                 return TASKS[next_idx].sp;
             }
