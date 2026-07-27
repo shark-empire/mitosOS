@@ -7,15 +7,22 @@ global _start
 ; --- Kernel Memory Layout ---
 KERNEL_TEMP_SEGMENT   equ 0x1000    ; 0x1000:0x0000 = physical 0x10000
 KERNEL_TEMP_OFFSET    equ 0x0000
-KERNEL_TOTAL_SECTORS  equ 256       ; 128KB total (Kernel Max Size)
+KERNEL_TOTAL_SECTORS  equ 768       ; 384KB total (Kernel Max Size) -- bumped from 256
+                                     ; (128KB) once ring-3/GDT/TSS/fault-handler code
+                                     ; pushed the real kernel past that; ~2.4x current
+                                     ; usage (~159KB) for headroom. Must stay a multiple
+                                     ; of KERNEL_CHUNK_SECTORS (64).
 KERNEL_CHUNK_SECTORS  equ 64        ; 32KB per BIOS call
 KERNEL_START_LBA      equ 65        ; sector 0=stage1, 1-64=stage2, 65=kernel
 KERNEL_LOAD_ADDR      equ 0x100000  ; final home: 1MB
 
 ; --- Ramdisk Memory Layout ---
-RAMDISK_TEMP_SEGMENT  equ 0x3000    ; 0x3000:0x0000 = physical 0x30000 (Immediately after temp kernel)
+RAMDISK_TEMP_SEGMENT  equ 0x7000    ; 0x7000:0x0000 = physical 0x70000 -- right after
+                                     ; the kernel temp buffer (0x10000 + 384KB = 0x70000);
+                                     ; +128KB more lands at 0x90000, still safely under
+                                     ; the ~0xA0000 video-memory region.
 RAMDISK_TOTAL_SECTORS equ 256       ; 128KB total (Ramdisk Max Size - bump this if your tar gets bigger)
-RAMDISK_START_LBA     equ 321       ; 65 + 256 = immediately after the kernel on disk
+RAMDISK_START_LBA     equ 833       ; 65 + 768 = immediately after the (now bigger) kernel on disk
 RAMDISK_LOAD_ADDR     equ 0x200000  ; final home: 2MB (Immediately after the loaded kernel)
 
 _start:
