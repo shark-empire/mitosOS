@@ -41,8 +41,12 @@ jobs:
       - name: Create ramdisk (ARM only)
         if: matrix.target == 'aarch64-unknown-none'
         run: |
-          echo "Hello from mitosOS in-memory filesystem!" > test.txt
-          tar -cf rootfs.tar test.txt
+          mkdir -p rootfs/bin
+          echo "Hello from mitosOS in-memory filesystem!" > rootfs/test.txt
+          aarch64-linux-gnu-as -o test_program_aarch64.o userspace/test_program_aarch64.s
+          aarch64-linux-gnu-ld -e _start -o rootfs/bin/test_program test_program_aarch64.o
+          rm -f test_program_aarch64.o
+          tar -cf rootfs.tar -C rootfs bin/test_program test.txt
 
       - name: Build kernel (ARM only)
         if: matrix.target == 'aarch64-unknown-none'
@@ -66,40 +70,39 @@ jobs:
           set -o pipefail
           if [ "${{ matrix.target }}" = "aarch64-unknown-none" ]; then
             BOOT_ARGS="-kernel kernel8.img"
-            INPUT_CMD=""
           else
             # 1. Mounts disk.img on IDE for the bootloader
             # 2. Injects an empty AHCI controller for the PCI scanner to find
             BOOT_ARGS="-drive format=raw,file=disk.img,if=ide -device ahci,id=ahci0"
-            # Exercises the shell -> VFS -> ELF loader -> ring-3 spawn path
-            # end to end, not just the boot sequence. userspace/test_program.s
-            # is `hlt; jmp .hang` -- hlt is ring-0-only, so hitting a General
-            # Protection Fault here is the actual proof the process ran in
-            # ring 3, not a failure. AArch64 doesn't spawn processes yet
-            # (see task.rs), so this is x86_64-only for now.
-            INPUT_CMD="run /bin/test_program"
           fi
 
-          if [ -n "$INPUT_CMD" ]; then
-            # -serial stdio maps the guest UART straight to QEMU's own
-            # stdin/stdout. Sleep first so the typed command doesn't land
-            # before the kernel's actually reached the shell prompt (the
-            # UART RX ring buffer would hold it either way, but this keeps
-            # the captured log readable); sleep after so there's time for
-            # the spawn, the fault, and the panic diagnostic to print
-            # before QEMU gets killed.
-            (sleep 6; printf '%s\n' "$INPUT_CMD"; sleep 6) | \
-              timeout 30s ${{ matrix.qemu_bin }} ${{ matrix.qemu_flags }} $BOOT_ARGS 2>&1 | tee qemu_output.log || true
-          else
-            timeout 20s ${{ matrix.qemu_bin }} ${{ matrix.qemu_flags }} $BOOT_ARGS 2>&1 | tee qemu_output.log || true
-          fi
+          # Exercises the shell -> VFS -> ELF loader -> ring-3/EL0 spawn
+          # path end to end on both architectures now, not just the boot
+          # sequence. test_program(_aarch64).s executes one instruction
+          # that's illegal at ring-3/EL0 -- hlt on x86_64 (ring-0-only),
+          # an EL1-only `mrs` on aarch64 (inaccessible from EL0 in either
+          # direction) -- so hitting the resulting fault is the actual
+          # proof the process ran unprivileged, not a failure.
+          INPUT_CMD="run /bin/test_program"
+
+          # -serial stdio maps the guest UART straight to QEMU's own
+          # stdin/stdout. Sleep first so the typed command doesn't land
+          # before the kernel's actually reached the shell prompt (the
+          # UART RX ring buffer would hold it either way, but this keeps
+          # the captured log readable); sleep after so there's time for
+          # the spawn, the fault, and the panic diagnostic to print
+          # before QEMU gets killed.
+          (sleep 6; printf '%s\n' "$INPUT_CMD"; sleep 6) | \
+            timeout 30s ${{ matrix.qemu_bin }} ${{ matrix.qemu_flags }} $BOOT_ARGS 2>&1 | tee qemu_output.log || true
 
           echo "----- captured serial output -----"
           cat qemu_output.log
           grep -q "mitosOS: kernel_main reached. Boot OK." qemu_output.log
 
-          if [ -n "$INPUT_CMD" ]; then
-            echo "----- checking ring-3 process spawn -----"
-            grep -q "Spawned as a new isolated (ring-3) process" qemu_output.log
+          echo "----- checking ring-3/EL0 process spawn -----"
+          grep -q "Spawned as a new isolated (ring-3) process" qemu_output.log
+          if [ "${{ matrix.target }}" = "aarch64-unknown-none" ]; then
+            grep -q "Trapped MSR/MRS/System instruction" qemu_output.log
+          else
             grep -q "General Protection Fault" qemu_output.log
           fi
