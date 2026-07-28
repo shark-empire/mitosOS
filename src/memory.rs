@@ -11,15 +11,23 @@ pub struct MapFlags {
     pub writable: bool,
     pub user_accessible: bool,
     pub execute_disable: bool,
+    /// AArch64 only: selects the Device-nGnRnE MAIR_EL1 attribute index
+    /// instead of Normal Write-Back (see mmu.rs). Ignored on x86_64,
+    /// which has no memory-type distinction wired up yet. Needed
+    /// because ARM's Device memory rules (no unaligned/speculative
+    /// access) are a strict superset of Normal's restrictions -- MMIO
+    /// mapped as Normal can silently misbehave, and marking ordinary
+    /// RAM as Device would be safe but needlessly slow.
+    pub device: bool,
 }
 
 impl MapFlags {
     pub const fn kernel_code() -> Self {
-        Self { writable: false, user_accessible: false, execute_disable: false }
+        Self { writable: false, user_accessible: false, execute_disable: false, device: false }
     }
 
     pub const fn kernel_data() -> Self {
-        Self { writable: true, user_accessible: false, execute_disable: true }
+        Self { writable: true, user_accessible: false, execute_disable: true, device: false }
     }
 }
 
@@ -335,6 +343,35 @@ pub unsafe fn create_process_page_table() -> Option<usize> {
             // per process before running multiple concurrent ones.
             for i in 0..256 {
                 new_root.add(i).write(active_root.add(i).read());
+            }
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        // Same problem as the x86_64 branch above, same fix: without
+        // this, the instant run_schedule switches TTBR0_EL1 to a
+        // freshly spawned process's table, the very next kernel-side
+        // instruction fetch (still at a low, kernel-identity-mapped
+        // address) has nothing to translate through and faults
+        // immediately. mmu.rs builds one flat identity map covering
+        // kernel RAM + MMIO, entirely inside L0 index 0 (a 512GB
+        // span) -- unlike x86_64's 512-entry PML4 where only the low
+        // 256 of 512 entries are ever used, there's no "unused half"
+        // to reason about here, so this just copies the whole 4KiB
+        // root table verbatim rather than picking indices.
+        //
+        // Same aliasing note as x86_64 too: this shares the
+        // underlying L1/L2/L3 tables with the kernel, not just the
+        // mappings -- fine for one process at a time.
+        let kernel_root = crate::mmu::kernel_root();
+        if kernel_root != 0 {
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    kernel_root as *const u8,
+                    root_frame as *mut u8,
+                    4096,
+                );
             }
         }
     }
