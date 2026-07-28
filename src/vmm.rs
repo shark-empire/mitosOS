@@ -98,6 +98,7 @@ pub mod arch {
                     writable: true,
                     user_accessible: true,
                     execute_disable: false,
+                    device: false,
                 },
             );
         }
@@ -133,6 +134,15 @@ pub mod arch {
             }
             if flags.execute_disable {
                 raw |= (1 << 53) | (1 << 54);
+            }
+            // AttrIndx[2:0] (bits 4:2) selects into MAIR_EL1 -- see
+            // mmu.rs. Index 1 = Device-nGnRnE, index 0 = Normal
+            // Write-Back. Table descriptors don't have this field
+            // (those bits mean something else there: PXNTable/
+            // APTable/etc at 59+, not attributes), so this only
+            // applies to leaf (page) entries.
+            if !is_table && flags.device {
+                raw |= 1 << 2;
             }
             self.0 = raw as u64;
         }
@@ -199,6 +209,7 @@ pub mod arch {
                     writable: true,
                     user_accessible: true,
                     execute_disable: false,
+                    device: false,
                 },
                 true,
             );
