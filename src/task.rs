@@ -60,7 +60,15 @@ pub struct TaskContext {
     pub regs: [usize; 31], // x0 through x30
     pub spsr: usize,       
     pub elr: usize,        
-    pub _pad: usize,       
+    /// SP_EL0 -- a single global register, not banked per-task the way
+    /// SP_EL1 effectively is (see the note on kernel_stack_top below).
+    /// Every trap taken from EL0 must save/restore this explicitly
+    /// (interrupts.rs's "Lower EL" vectors do) or a preempted EL0
+    /// task would resume on whichever *other* task's user stack
+    /// happened to be current last. This used to be unused padding,
+    /// back when nothing ever actually reached EL0 -- same 8 bytes,
+    /// same 272-byte frame size, just given a job.
+    pub sp_el0: usize,
 }
 
 /// A 16-byte aligned stack wrapper.
@@ -171,17 +179,22 @@ impl Task {
 
         #[cfg(target_arch = "aarch64")]
         unsafe {
-            // AArch64 ring-3 (EL0) execution isn't wired up yet -- every
-            // task still runs at EL1h regardless of `mode`. The
-            // synchronous-exception vector for traps from EL0 already
-            // exists (interrupts.rs), so this is mainly SPSR/TTBR0 work
-            // when it's time to do this architecture too.
-            let _ = user_stack_top;
+            // SPSR_EL1.M[3:0]: 0x0 = EL0t (the only valid EL0 mode --
+            // there's no "EL0h"), 0x5 = EL1h. Leaving DAIF clear either
+            // way means interrupts are unmasked the instant this task's
+            // context is restored, matching x86_64's rflags=0x202 (IF=1).
+            //
+            // The user stack lives in SP_EL0, a completely separate
+            // banked register from SP_EL1/`stack` below -- eret with
+            // SPSR.M=EL0t switches to it automatically, but only once
+            // interrupts.rs's "Lower EL" vectors have actually restored
+            // it from here first.
+            let is_user = mode == ExecutionMode::IsolatedProcess && user_stack_top != 0;
             frame_ptr.write(TaskContext {
                 regs: [0; 31],
-                spsr: 0x05,            
-                elr: entry as usize,   
-                _pad: 0,
+                spsr: if is_user { 0x0 } else { 0x5 },
+                elr: entry as usize,
+                sp_el0: if is_user { user_stack_top } else { 0 },
             });
         }
 
@@ -190,6 +203,26 @@ impl Task {
 
     /// Top of this task's kernel stack -- the value TSS.RSP0 should hold
     /// while this task is the one running (see run_schedule).
+    ///
+    /// AArch64 has no equivalent of this function, deliberately -- not
+    /// an oversight. x86_64 needs TSS.RSP0 because ring-3->ring-0 is a
+    /// *single*, unbanked RSP register: the CPU has no memory of "what
+    /// RSP this task's kernel side was using last time", so hardware
+    /// has to be told explicitly, every switch, via a separate staging
+    /// field, or an unrelated task's stale RSP gets reused.
+    ///
+    /// AArch64 doesn't have that problem: SP_EL1 is a banked register,
+    /// physically separate from SP_EL0, so it simply *stays* wherever
+    /// EL1 code last left it -- including across an eret to EL0 and
+    /// back. interrupts.rs's exception stubs already do `mov sp, x0`
+    /// with a pointer into *this specific task's* `stack` buffer as
+    /// part of every restore (needed regardless, to reach the saved
+    /// register values), which means SP_EL1 is left pointing at that
+    /// same task-private buffer the moment we eret away -- exactly
+    /// what a per-task kernel landing stack needs, with no additional
+    /// staging step. `stack` already serves both roles (initial
+    /// bootstrap frame *and* every later EL0->EL1 trap landing) with
+    /// nothing extra required.
     #[cfg(target_arch = "x86_64")]
     fn kernel_stack_top(&self) -> usize {
         (self.kernel_stack.0.as_ptr() as usize + STACK_SIZE) & !0xF
@@ -354,6 +387,7 @@ fn allocate_user_stack(page_table_root: usize) -> Option<usize> {
         writable: true,
         user_accessible: true,
         execute_disable: true,
+        device: false,
     };
 
     let stack_bottom = USER_STACK_TOP - USER_STACK_PAGES * PAGE_SIZE;
@@ -372,13 +406,38 @@ fn allocate_user_stack(page_table_root: usize) -> Option<usize> {
     Some(USER_STACK_TOP)
 }
 
-/// AArch64 ring-3 (EL0) execution isn't wired up yet -- see the note in
-/// Task::init. Nothing calls spawn_from_elf on this architecture yet, so
-/// this just makes it fail cleanly (`None`) instead of silently mapping a
-/// stack that would never actually get used from EL0.
+/// AArch64 equivalent of the x86_64 function above -- same address,
+/// same page count, same reasoning, using vmm::arch::map_page's
+/// AArch64 branch instead of the x86_64 one. 0x1000_0000 (256MB) is
+/// deliberately clear of both this kernel's own identity-mapped low
+/// range (32MiB, see mmu.rs) and wherever a linked ELF binary
+/// conventionally lands, so the two can't collide for a single
+/// process. Same not-yet-handled-for-two-processes caveat as x86_64.
 #[cfg(target_arch = "aarch64")]
-fn allocate_user_stack(_page_table_root: usize) -> Option<usize> {
-    None
+fn allocate_user_stack(page_table_root: usize) -> Option<usize> {
+    const USER_STACK_TOP: usize = 0x1000_0000; // 256MB
+    const USER_STACK_PAGES: usize = 4; // 16KB
+    const PAGE_SIZE: usize = 4096;
+
+    let root = page_table_root as *mut crate::vmm::arch::PageTable;
+    let flags = crate::memory::MapFlags {
+        writable: true,
+        user_accessible: true,
+        execute_disable: true,
+        device: false,
+    };
+
+    let stack_bottom = USER_STACK_TOP - USER_STACK_PAGES * PAGE_SIZE;
+    for i in 0..USER_STACK_PAGES {
+        let vaddr = stack_bottom + i * PAGE_SIZE;
+        let phys = crate::memory::vmm_alloc_frame()?;
+        unsafe {
+            core::ptr::write_bytes(phys as *mut u8, 0, PAGE_SIZE);
+            crate::vmm::arch::map_page(root, vaddr, phys, flags).ok()?;
+        }
+    }
+
+    Some(USER_STACK_TOP)
 }
 
 /// Spawns a new isolated process from an ELF binary in memory.
