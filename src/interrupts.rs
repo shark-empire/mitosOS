@@ -100,6 +100,7 @@ mod imp {
         let name = match ec {
             0x0E => "Illegal Execution State",
             0x15 => "SVC instruction (unexpected at EL1)",
+            0x18 => "Trapped MSR/MRS/System instruction",
             0x20 => "Instruction Abort (from a lower EL)",
             0x21 => "Instruction Abort (same EL)",
             0x24 => "Data Abort (from a lower EL)",
@@ -108,12 +109,47 @@ mod imp {
         };
 
         let mut uart = unsafe { crate::uart::Uart::init() };
-        let _ = writeln!(uart, "\r\n!!! AArch64 EL1 EXCEPTION: {name} (EC=0x{ec:02x}) !!!");
+        let _ = writeln!(uart, "\r\n!!! AArch64 EXCEPTION: {name} (EC=0x{ec:02x}) !!!");
         let _ = writeln!(uart, "    ESR_EL1 = 0x{esr:016x}");
         let _ = writeln!(uart, "    FAR_EL1 = 0x{far:016x}  (faulting address)");
         let _ = writeln!(uart, "    ELR_EL1 = 0x{elr:016x}  (faulting instruction)");
 
-        panic!("Unhandled AArch64 EL1 exception: {name}");
+        panic!("Unhandled AArch64 exception: {name}");
+    }
+
+    /// Dispatcher for the "Lower EL using AArch64, Synchronous" vector
+    /// slot -- every sync exception taken from EL0 lands here, not
+    /// just genuine `svc` calls. This used to *be* the syscall path
+    /// directly (the assembly just always called syscall_handler), on
+    /// the assumption that nothing but svc would ever get here since
+    /// nothing ran at EL0 yet. Now that real EL0 processes exist, a
+    /// bad pointer, an unaligned access, or (as userspace/
+    /// test_program_aarch64.s deliberately exercises) a trapped
+    /// MSR/MRS needs to actually get reported instead of eret-ing
+    /// straight back into the same faulting instruction forever.
+    ///
+    /// ESR_EL1.EC 0x15 is a real SVC -- everything else is an
+    /// unhandled EL0 fault, routed through the same reporting/panic
+    /// path EL1's own faults already use. There's no per-process
+    /// fault recovery yet (same limitation as EL1), so this is fatal
+    /// to the whole kernel, matching x86_64's current sophistication
+    /// (a #GP from ring 3 is equally fatal there today).
+    #[unsafe(no_mangle)]
+    pub extern "C" fn handle_el0_sync_trap(
+        esr: u64,
+        far: u64,
+        elr: u64,
+        sysno: u64,
+        a0: u64,
+        a1: u64,
+        a2: u64,
+    ) -> u64 {
+        let ec = (esr >> 26) & 0x3F;
+        if ec == 0x15 {
+            crate::syscall::syscall_handler(sysno as usize, a0 as usize, a1 as usize, a2 as usize) as u64
+        } else {
+            handle_el1_sync_exception(esr, far, elr)
+        }
     }
 }
 
@@ -257,7 +293,7 @@ mod imp {
             pic_outb(0xA1, 0x02); 
             pic_outb(0x21, 0x01); 
             pic_outb(0xA1, 0x01); 
-            pic_outb(0x21, 0xEE);
+            pic_outb(0x21, 0xEF);
             pic_outb(0xA1, 0xFF); 
         }
     }
@@ -526,14 +562,22 @@ core::arch::global_asm!(
 
       // =========================================================
       // 2. Current EL with SP_x (4 vectors, 128 bytes each)
+      //
+      // Each of these 16 table entries has a hardware-fixed address
+      // (VBAR_EL1 + a fixed per-slot offset) and a hardware-fixed
+      // 128-byte (32-instruction) budget -- this is an ARM
+      // architectural requirement, not a style convention. A full
+      // save-context/call-handler/restore-context/eret sequence is
+      // 45+ instructions on its own, well over budget, so every slot
+      // below that needs real work is just a `b` to an out-of-line
+      // body placed after the table (outside the 2KB-aligned region,
+      // with no 128-byte limit). `b`, not `bl` -- `bl` would clobber
+      // x30 with a return address before the body gets a chance to
+      // save the *interrupted* x30 as part of its context.
       // =========================================================
 
       // --- Synchronous Exception Slot (Current EL, SP_x) ---
-      // A kernel-mode data abort, illegal instruction, etc. used to land
-      // here and just `b .` (hang) with zero diagnostics. Dump the
-      // architected syndrome/fault-address/return-address registers and
-      // hand off to Rust instead -- handle_el1_sync_exception never
-      // returns, so there's no need to restore anything below.
+      // Short enough (5 instructions) to stay inline.
       mrs x0, esr_el1
       mrs x1, far_el1
       mrs x2, elr_el1
@@ -542,59 +586,10 @@ core::arch::global_asm!(
       .balign 128
       
       // --- IRQ Handler Vector Slot (Current EL, SP_x) ---
-      sub sp, sp, #272
-
-      stp x0, x1, [sp, #0]
-      stp x2, x3, [sp, #16]
-      stp x4, x5, [sp, #32]
-      stp x6, x7, [sp, #48]
-      stp x8, x9, [sp, #64]
-      stp x10, x11, [sp, #80]
-      stp x12, x13, [sp, #96]
-      stp x14, x15, [sp, #112]
-      stp x16, x17, [sp, #128]
-      stp x18, x19, [sp, #144]
-      stp x20, x21, [sp, #160]
-      stp x22, x23, [sp, #176]
-      stp x24, x25, [sp, #192]
-      stp x26, x27, [sp, #208]
-      stp x28, x29, [sp, #224]
-      str x30, [sp, #240]
-
-      mrs x0, spsr_el1
-      mrs x1, elr_el1
-      stp x0, x1, [sp, #248]
-
-      bl handle_irq
-
-      mov x0, sp
-      bl schedule
-
-      mov sp, x0
-
-      ldp x0, x1, [sp, #248]
-      msr spsr_el1, x0
-      msr elr_el1, x1
-
-      ldp x0, x1, [sp, #0]
-      ldp x2, x3, [sp, #16]
-      ldp x4, x5, [sp, #32]
-      ldp x6, x7, [sp, #48]
-      ldp x8, x9, [sp, #64]
-      ldp x10, x11, [sp, #80]
-      ldp x12, x13, [sp, #96]
-      ldp x14, x15, [sp, #112]
-      ldp x16, x17, [sp, #128]
-      ldp x18, x19, [sp, #144]
-      ldp x20, x21, [sp, #160]
-      ldp x22, x23, [sp, #176]
-      ldp x24, x25, [sp, #192]
-      ldp x26, x27, [sp, #208]
-      ldp x28, x29, [sp, #224]
-      ldr x30, [sp, #240]
-
-      add sp, sp, #272
-      eret
+      // Only ever taken while the CPU was already at EL1 (kernel code
+      // interrupted) -- an EL0 task's IRQ lands in Slot 1 of section 3
+      // below instead.
+      b el1_irq_body
       .balign 128
       
       b .
@@ -606,69 +601,29 @@ core::arch::global_asm!(
       // 3. Lower EL using AArch64 (4 vectors, 128 bytes each)
       // =========================================================
       
-      // --- Slot 0: Synchronous Exception / System Call (svc) from User Space ---
-      sub sp, sp, #272
-
-      stp x0, x1, [sp, #0]
-      stp x2, x3, [sp, #16]
-      stp x4, x5, [sp, #32]
-      stp x6, x7, [sp, #48]
-      stp x8, x9, [sp, #64]
-      stp x10, x11, [sp, #80]
-      stp x12, x13, [sp, #96]
-      stp x14, x15, [sp, #112]
-      stp x16, x17, [sp, #128]
-      stp x18, x19, [sp, #144]
-      stp x20, x21, [sp, #160]
-      stp x22, x23, [sp, #176]
-      stp x24, x25, [sp, #192]
-      stp x26, x27, [sp, #208]
-      stp x28, x29, [sp, #224]
-      str x30, [sp, #240]
-
-      mrs x0, spsr_el1
-      mrs x1, elr_el1
-      stp x0, x1, [sp, #248]
-
-      // Map syscall arguments for syscall_handler(sys_num, arg1, arg2, arg3)
-      // x8 holds system call number, x0, x1, x2 hold arguments
-      mov x3, x2
-      mov x2, x1
-      mov x1, x0
-      mov x0, x8 
-      bl syscall_handler
-
-      // Save return value into saved x0 position on stack
-      str x0, [sp, #0]
-
-      ldp x0, x1, [sp, #248]
-      msr spsr_el1, x0
-      msr elr_el1, x1
-
-      ldp x0, x1, [sp, #0]
-      ldp x2, x3, [sp, #16]
-      ldp x4, x5, [sp, #32]
-      ldp x6, x7, [sp, #48]
-      ldp x8, x9, [sp, #64]
-      ldp x10, x11, [sp, #80]
-      ldp x12, x13, [sp, #96]
-      ldp x14, x15, [sp, #112]
-      ldp x16, x17, [sp, #128]
-      ldp x18, x19, [sp, #144]
-      ldp x20, x21, [sp, #160]
-      ldp x22, x23, [sp, #176]
-      ldp x24, x25, [sp, #192]
-      ldp x26, x27, [sp, #208]
-      ldp x28, x29, [sp, #224]
-      ldr x30, [sp, #240]
-
-      add sp, sp, #272
-      eret
+      // --- Slot 0: Synchronous Exception from EL0 ---
+      // Used to assume every sync exception from EL0 was a deliberate
+      // `svc` and blindly dispatch straight to syscall_handler -- fine
+      // while nothing ever ran at EL0, but a real fault (bad pointer,
+      // a trapped privileged instruction, an unaligned access) would
+      // eret straight back into the *same* faulting instruction with
+      // zero diagnostics: an invisible infinite trap loop. el0_sync_body
+      // dispatches on ESR_EL1.EC now, via handle_el0_sync_trap in Rust:
+      // EC 0x15 is a real SVC and gets routed to syscall_handler;
+      // anything else is an unhandled EL0 fault, reported and fatal,
+      // same as an EL1 fault.
+      b el0_sync_body
       .balign 128
 
-      // --- Slot 1: IRQ from Lower EL ---
-      b .
+      // --- Slot 1: IRQ from Lower EL (EL0) ---
+      // Used to be `b .` -- an unconditional hang. This, not the
+      // Current-EL IRQ slot above, is the vector actually taken when a
+      // timer tick lands while an EL0 process is running -- leaving it
+      // unimplemented meant the entire system would freeze solid on
+      // the very first preemption of any real EL0 code.
+      b el0_irq_body
       .balign 128
+
       // --- Slot 2: FIQ from Lower EL ---
       b .
       .balign 128
@@ -687,6 +642,207 @@ core::arch::global_asm!(
       .balign 128
       b .
       .balign 128
+
+      // =========================================================
+      // Out-of-line handler bodies. Outside the 2KB-aligned vector
+      // table region, so none of the 128-byte-per-slot budget applies
+      // here -- these can be as long as they need to be.
+      // =========================================================
+
+      // --- Current EL, SP_x IRQ body ---
+      // Saves/restores sp_el0 even though *this* context never touches
+      // it: run_schedule() is generic and may hand back an EL0 task's
+      // context, and this eret is what would drop into it -- without
+      // this, that task would resume on whatever SP_EL0 was last left
+      // lying around instead of its own.
+      el1_irq_body:
+      sub sp, sp, #272
+
+      stp x0, x1, [sp, #0]
+      stp x2, x3, [sp, #16]
+      stp x4, x5, [sp, #32]
+      stp x6, x7, [sp, #48]
+      stp x8, x9, [sp, #64]
+      stp x10, x11, [sp, #80]
+      stp x12, x13, [sp, #96]
+      stp x14, x15, [sp, #112]
+      stp x16, x17, [sp, #128]
+      stp x18, x19, [sp, #144]
+      stp x20, x21, [sp, #160]
+      stp x22, x23, [sp, #176]
+      stp x24, x25, [sp, #192]
+      stp x26, x27, [sp, #208]
+      stp x28, x29, [sp, #224]
+      str x30, [sp, #240]
+
+      mrs x0, spsr_el1
+      mrs x1, elr_el1
+      stp x0, x1, [sp, #248]
+      mrs x0, sp_el0
+      str x0, [sp, #264]
+
+      bl handle_irq
+
+      mov x0, sp
+      bl schedule
+
+      mov sp, x0
+
+      ldp x0, x1, [sp, #248]
+      msr spsr_el1, x0
+      msr elr_el1, x1
+      ldr x0, [sp, #264]
+      msr sp_el0, x0
+
+      ldp x0, x1, [sp, #0]
+      ldp x2, x3, [sp, #16]
+      ldp x4, x5, [sp, #32]
+      ldp x6, x7, [sp, #48]
+      ldp x8, x9, [sp, #64]
+      ldp x10, x11, [sp, #80]
+      ldp x12, x13, [sp, #96]
+      ldp x14, x15, [sp, #112]
+      ldp x16, x17, [sp, #128]
+      ldp x18, x19, [sp, #144]
+      ldp x20, x21, [sp, #160]
+      ldp x22, x23, [sp, #176]
+      ldp x24, x25, [sp, #192]
+      ldp x26, x27, [sp, #208]
+      ldp x28, x29, [sp, #224]
+      ldr x30, [sp, #240]
+
+      add sp, sp, #272
+      eret
+
+      // --- Lower EL AArch64, Slot 0 (Synchronous) body ---
+      el0_sync_body:
+      sub sp, sp, #272
+
+      stp x0, x1, [sp, #0]
+      stp x2, x3, [sp, #16]
+      stp x4, x5, [sp, #32]
+      stp x6, x7, [sp, #48]
+      stp x8, x9, [sp, #64]
+      stp x10, x11, [sp, #80]
+      stp x12, x13, [sp, #96]
+      stp x14, x15, [sp, #112]
+      stp x16, x17, [sp, #128]
+      stp x18, x19, [sp, #144]
+      stp x20, x21, [sp, #160]
+      stp x22, x23, [sp, #176]
+      stp x24, x25, [sp, #192]
+      stp x26, x27, [sp, #208]
+      stp x28, x29, [sp, #224]
+      str x30, [sp, #240]
+
+      mrs x0, spsr_el1
+      mrs x1, elr_el1
+      stp x0, x1, [sp, #248]
+      mrs x0, sp_el0
+      str x0, [sp, #264]
+
+      // handle_el0_sync_trap(esr, far, elr, sysno, a0, a1, a2) -> u64.
+      // The original x0-x2 (syscall args, if this is an svc) are
+      // already safe on the stack from the saves above, so it's fine
+      // to clobber the live x0-x2 with the esr/far/elr args here and
+      // reload the originals into x4-x6 afterwards.
+      mrs x0, esr_el1
+      mrs x1, far_el1
+      mrs x2, elr_el1
+      mov x3, x8
+      ldr x4, [sp, #0]
+      ldr x5, [sp, #8]
+      ldr x6, [sp, #16]
+      bl handle_el0_sync_trap
+      str x0, [sp, #0]
+
+      ldp x0, x1, [sp, #248]
+      msr spsr_el1, x0
+      msr elr_el1, x1
+      ldr x0, [sp, #264]
+      msr sp_el0, x0
+
+      ldp x0, x1, [sp, #0]
+      ldp x2, x3, [sp, #16]
+      ldp x4, x5, [sp, #32]
+      ldp x6, x7, [sp, #48]
+      ldp x8, x9, [sp, #64]
+      ldp x10, x11, [sp, #80]
+      ldp x12, x13, [sp, #96]
+      ldp x14, x15, [sp, #112]
+      ldp x16, x17, [sp, #128]
+      ldp x18, x19, [sp, #144]
+      ldp x20, x21, [sp, #160]
+      ldp x22, x23, [sp, #176]
+      ldp x24, x25, [sp, #192]
+      ldp x26, x27, [sp, #208]
+      ldp x28, x29, [sp, #224]
+      ldr x30, [sp, #240]
+
+      add sp, sp, #272
+      eret
+
+      // --- Lower EL AArch64, Slot 1 (IRQ) body ---
+      // Identical to el1_irq_body otherwise: same generic scheduler,
+      // same context shape, same sp_el0 handling.
+      el0_irq_body:
+      sub sp, sp, #272
+
+      stp x0, x1, [sp, #0]
+      stp x2, x3, [sp, #16]
+      stp x4, x5, [sp, #32]
+      stp x6, x7, [sp, #48]
+      stp x8, x9, [sp, #64]
+      stp x10, x11, [sp, #80]
+      stp x12, x13, [sp, #96]
+      stp x14, x15, [sp, #112]
+      stp x16, x17, [sp, #128]
+      stp x18, x19, [sp, #144]
+      stp x20, x21, [sp, #160]
+      stp x22, x23, [sp, #176]
+      stp x24, x25, [sp, #192]
+      stp x26, x27, [sp, #208]
+      stp x28, x29, [sp, #224]
+      str x30, [sp, #240]
+
+      mrs x0, spsr_el1
+      mrs x1, elr_el1
+      stp x0, x1, [sp, #248]
+      mrs x0, sp_el0
+      str x0, [sp, #264]
+
+      bl handle_irq
+
+      mov x0, sp
+      bl schedule
+
+      mov sp, x0
+
+      ldp x0, x1, [sp, #248]
+      msr spsr_el1, x0
+      msr elr_el1, x1
+      ldr x0, [sp, #264]
+      msr sp_el0, x0
+
+      ldp x0, x1, [sp, #0]
+      ldp x2, x3, [sp, #16]
+      ldp x4, x5, [sp, #32]
+      ldp x6, x7, [sp, #48]
+      ldp x8, x9, [sp, #64]
+      ldp x10, x11, [sp, #80]
+      ldp x12, x13, [sp, #96]
+      ldp x14, x15, [sp, #112]
+      ldp x16, x17, [sp, #128]
+      ldp x18, x19, [sp, #144]
+      ldp x20, x21, [sp, #160]
+      ldp x22, x23, [sp, #176]
+      ldp x24, x25, [sp, #192]
+      ldp x26, x27, [sp, #208]
+      ldp x28, x29, [sp, #224]
+      ldr x30, [sp, #240]
+
+      add sp, sp, #272
+      eret
     "#
 );
 
