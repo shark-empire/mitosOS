@@ -88,6 +88,7 @@ impl crate::drivers::ahci::Hal for KernelHal {
             writable: true,
             user_accessible: false,
             execute_disable: true,
+            device: false,
         };
 
         let mut page = page_start;
