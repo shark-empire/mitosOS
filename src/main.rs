@@ -27,6 +27,8 @@ pub mod addr;
 pub mod pci;
 #[cfg(target_arch = "x86_64")]
 pub mod gdt;
+#[cfg(target_arch = "aarch64")]
+pub mod mmu;
 
 
 use core::fmt::Write;
@@ -78,6 +80,14 @@ pub extern "C" fn kmain() -> ! {
         // those were freely handing out frames from the "reserved" range,
         // including frame 0 itself.
         protect_boot_memory(&raw const _kernel_end as usize, HEAP_START, HEAP_SIZE);
+
+        // 3c. Bring the MMU up (AArch64 only -- x86_64 has had paging on
+        // since the bootloader's real->protected->long mode transition,
+        // long before kmain runs). Everything after this point that
+        // touches GIC/UART MMIO or dereferences a vmm_alloc_frame()
+        // result depends on this having already run -- see mmu.rs.
+        #[cfg(target_arch = "aarch64")]
+        mmu::init(&mut uart);
 
         // 3. Unmask the UART's interrupt line.
         uart.enable_interrupts();
