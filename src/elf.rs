@@ -145,6 +145,7 @@ unsafe fn map_and_copy_segment(
             writable: flags & 0x2 != 0,
             user_accessible: true,
             execute_disable: flags & 0x1 == 0,
+            device: false,
         };
 
         let root = page_table_root as *mut crate::vmm::arch::PageTable;
