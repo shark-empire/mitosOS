@@ -1,5 +1,7 @@
 //! AArch64 MMU bring-up.
+#[cfg(target_arch = "aarch64")]
 //!
+
 //! x86_64 never needs a file like this: long mode *requires* paging, so
 //! the two-stage bootloader (stage1.s/stage2.s) already has the MMU on
 //! -- an identity map loaded into CR3 -- before kmain ever runs.
