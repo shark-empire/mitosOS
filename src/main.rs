@@ -159,10 +159,10 @@ if let Some(frame) = crate::memory::alloc_frame() {
 
     // 1. MEMORY: flags demo (actual protect_boot_memory now runs right
     // after heap init, near the top of kmain -- see above)
-    unsafe {
+    
         let _code = MapFlags::kernel_code();
         let _data = MapFlags::kernel_data();
-    }
+    
 
     // 2. GRAPHICS: Initialize the screen
     const FB_ADDR: usize = 0xFD000000;
