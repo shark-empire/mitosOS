@@ -301,52 +301,40 @@ fn run_command(uart: &mut Uart, line: &str, history: &[String], ramdisk: &Option
                 return;
             }
 
-            #[cfg(target_arch = "x86_64")]
-            {
-                let target_file = args[1];
-                let vfs = crate::fs::vfs::VFS.lock();
-                let node = match vfs.open(target_file) {
-                    Some(n) => n,
-                    None => {
-                        let _ = writeln!(uart, "Error: '{}' not found in VFS.", target_file);
-                        return;
-                    }
-                };
-                let meta = node.metadata();
-                let mut buffer = alloc::vec![0u8; meta.size];
-                let bytes_read = match node.read(0, &mut buffer) {
-                    Ok(n) => n,
-                    Err(e) => {
-                        let _ = writeln!(uart, "Error reading file: {}", e);
-                        return;
-                    }
-                };
-                // node is an Arc, not borrowed from vfs -- safe to release
-                // the lock before spawning, since load_elf_to_process /
-                // spawn_from_elf never touch the VFS themselves and there's
-                // no reason to hold it while they run.
-                drop(vfs);
-
-                let _ = writeln!(uart, "Loading '{}' ({} bytes)...", target_file, bytes_read);
-                if crate::task::spawn_from_elf(&buffer[..bytes_read]) {
-                    let _ = writeln!(uart, "Spawned as a new isolated (ring-3) process -- check 'ps'.");
-                } else {
-                    let _ = writeln!(
-                        uart,
-                        "Failed to spawn '{}'. Common causes right now: no free task slot \
-                         (MAX_TASKS is 4, and two are already used by the background workers), \
-                         or the ELF failed to load/map -- see task.rs::spawn_from_elf.",
-                        target_file
-                    );
+            let target_file = args[1];
+            let vfs = crate::fs::vfs::VFS.lock();
+            let node = match vfs.open(target_file) {
+                Some(n) => n,
+                None => {
+                    let _ = writeln!(uart, "Error: '{}' not found in VFS.", target_file);
+                    return;
                 }
-            }
+            };
+            let meta = node.metadata();
+            let mut buffer = alloc::vec![0u8; meta.size];
+            let bytes_read = match node.read(0, &mut buffer) {
+                Ok(n) => n,
+                Err(e) => {
+                    let _ = writeln!(uart, "Error reading file: {}", e);
+                    return;
+                }
+            };
+            // node is an Arc, not borrowed from vfs -- safe to release
+            // the lock before spawning, since load_elf_to_process /
+            // spawn_from_elf never touch the VFS themselves and there's
+            // no reason to hold it while they run.
+            drop(vfs);
 
-            #[cfg(not(target_arch = "x86_64"))]
-            {
+            let _ = writeln!(uart, "Loading '{}' ({} bytes)...", target_file, bytes_read);
+            if crate::task::spawn_from_elf(&buffer[..bytes_read]) {
+                let _ = writeln!(uart, "Spawned as a new isolated (ring-3) process -- check 'ps'.");
+            } else {
                 let _ = writeln!(
                     uart,
-                    "run: ring-3 process spawning isn't wired up on this architecture yet \
-                     (see the AArch64 notes in task.rs::Task::init and allocate_user_stack)."
+                    "Failed to spawn '{}'. Common causes right now: no free task slot \
+                     (MAX_TASKS is 4, and two are already used by the background workers), \
+                     or the ELF failed to load/map -- see task.rs::spawn_from_elf.",
+                    target_file
                 );
             }
         }
@@ -402,13 +390,19 @@ fn cmd_uname(uart: &mut Uart) {
     }
 
     #[cfg(target_arch = "aarch64")]
-    unsafe {
-        core::arch::asm!(
-            "svc #0",
-            in("x8") SYS_UNAME,
-            in("x0") ptr,
-            lateout("x0") res,
-        );
+    {
+        // A direct `svc #0` here would trap to the "Current EL, SP_x"
+        // vector, not the "Lower EL" one used by real EL0 syscalls --
+        // AArch64 routes a software exception based on whether the
+        // caller was already *at* the target EL (EL1, always, for
+        // svc), unlike x86's `int N`, which doesn't distinguish. The
+        // shell runs at EL1, so this used to land in
+        // handle_el1_sync_exception and panic the kernel every time
+        // this command ran ("SVC instruction (unexpected at EL1)").
+        // There's no actual privilege boundary to cross here anyway
+        // -- the shell already *is* kernel code -- so just call the
+        // handler directly instead of manufacturing a trap.
+        res = crate::syscall::syscall_handler(SYS_UNAME, ptr, 0, 0);
     }
 
     if res == 0 {
