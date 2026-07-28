@@ -1,21 +1,21 @@
-//! AArch64 MMU bring-up.
+// AArch64 MMU bring-up.
 #[cfg(target_arch = "aarch64")]
-//!
 
-//! x86_64 never needs a file like this: long mode *requires* paging, so
-//! the two-stage bootloader (stage1.s/stage2.s) already has the MMU on
-//! -- an identity map loaded into CR3 -- before kmain ever runs.
-//! AArch64's boot.s does nothing but set sp and jump straight to kmain.
-//! The MMU has been off this whole time, which means every
-//! `msr ttbr0_el1` in task::run_schedule and every
-//! `vmm::arch::map_page` call has had zero effect until now -- there
-//! was no translation happening for it to affect.
-//!
-//! This mirrors the "no higher-half split, physical == virtual"
-//! design already stated in memory.rs: everything (kernel now, user
-//! processes once task.rs spawns one) lives under a single
-//! TTBR0_EL1 root, with TTBR1_EL1 walks disabled entirely (TCR_EL1.EPD1)
-//! since nothing here uses a higher half.
+
+// x86_64 never needs a file like this: long mode *requires* paging, so
+// the two-stage bootloader (stage1.s/stage2.s) already has the MMU on
+// -- an identity map loaded into CR3 -- before kmain ever runs.
+// AArch64's boot.s does nothing but set sp and jump straight to kmain.
+// The MMU has been off this whole time, which means every
+// `msr ttbr0_el1` in task::run_schedule and every
+// `vmm::arch::map_page` call has had zero effect until now -- there
+// was no translation happening for it to affect.
+
+// This mirrors the "no higher-half split, physical == virtual"
+// design already stated in memory.rs: everything (kernel now, user
+// processes once task.rs spawns one) lives under a single
+// TTBR0_EL1 root, with TTBR1_EL1 walks disabled entirely (TCR_EL1.EPD1)
+// since nothing here uses a higher half.
 
 use core::fmt::Write;
 use crate::memory::{vmm_alloc_frame, MapFlags};
