@@ -109,6 +109,28 @@ pub fn load_elf_to_process(elf_data: &[u8], page_table_root: usize) -> Result<us
                 return Err("Segment file offset out of bounds");
             }
 
+            // p_vaddr is used as-is, straight from the file, with no
+            // relocation -- load_elf_to_process trusts it completely.
+            // Below USER_SPACE_BASE is the shared kernel region: every
+            // process's page table has real, present entries there
+            // (copied from the kernel's own table, see
+            // create_process_page_table), so mapping a segment there
+            // wouldn't fail or land in some sandboxed corner -- it
+            // would walk into the *same* physical PDPT/PD/PT structure
+            // the kernel and every other process also use, and either
+            // overwrite one of the kernel's own live translations or
+            // splice a new one into a structure that's supposed to be
+            // read-only-by-convention for user code. A deliberately
+            // crafted binary could use this to attack the kernel
+            // directly; a linker script with the wrong default base
+            // could do it by accident. Refuse either way.
+            let end_vaddr = p_vaddr
+                .checked_add(p_memsz)
+                .ok_or("Segment size overflows the address space")?;
+            if p_vaddr < crate::memory::USER_SPACE_BASE || end_vaddr < crate::memory::USER_SPACE_BASE {
+                return Err("Segment targets the shared kernel region below USER_SPACE_BASE -- refusing to load");
+            }
+
             let segment_data = &elf_data[p_offset..p_offset + p_filesz];
 
             unsafe {
@@ -121,6 +143,10 @@ pub fn load_elf_to_process(elf_data: &[u8], page_table_root: usize) -> Result<us
                 )?;
             }
         }
+    }
+
+    if entry_point < crate::memory::USER_SPACE_BASE {
+        return Err("Entry point is below USER_SPACE_BASE -- refusing to run");
     }
 
     Ok(entry_point)
