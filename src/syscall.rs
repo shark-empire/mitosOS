@@ -42,7 +42,7 @@ fn sys_write(fd: usize, ptr: *const u8, len: usize) -> usize {
     }
 
     let slice = unsafe { core::slice::from_raw_parts(ptr, len) };
-    let mut uart = unsafe { crate::uart::Uart::init() };
+    let mut uart = crate::uart::Uart::shared();
 
     if let Ok(text) = core::str::from_utf8(slice) {
         let _ = uart.write_str(text);
@@ -93,7 +93,7 @@ fn sys_exit(_exit_code: usize) -> ! {
 
 /// Fallback for unregistered or unhandled system call numbers.
 fn sys_unknown(sys_num: usize) -> usize {
-    let mut uart = unsafe { crate::uart::Uart::init() };
+    let mut uart = crate::uart::Uart::shared();
     let _ = writeln!(uart, "mitosOS: Unknown syscall number: {sys_num}");
     usize::MAX
 }
