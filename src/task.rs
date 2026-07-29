@@ -125,23 +125,7 @@ impl Task {
         }
     }
 
-/// Marks the currently executing boot context as Task 0 so the scheduler
-/// can safely preempt and resume the kernel shell.
-pub fn init_primary_task() {
-    unsafe {
-        TASKS[0].id = 0;
-        TASKS[0].parent_id = 0;
-        TASKS[0].state = TaskState::Running;
-        TASKS[0].memory_root = current_memory_root();
-        TASKS[0].fd_table = Some(crate::fd::FileDescriptorTable::new());
-        #[cfg(target_arch = "x86_64")]
-        {
-            crate::gdt::set_kernel_stack(TASKS[0].kernel_stack_top() as u64);
-        }
-        CURRENT_TASK.store(0, Ordering::Relaxed);
-        TASK_INITIALIZED.store(true, Ordering::Release);
-    }
-}
+
 
 
     /// Initializes the stack frame, registers, and memory boundaries for a new task.
@@ -245,6 +229,24 @@ pub fn init_primary_task() {
     #[cfg(target_arch = "x86_64")]
     fn kernel_stack_top(&self) -> usize {
         (self.kernel_stack.0.as_ptr() as usize + STACK_SIZE) & !0xF
+    }
+}
+
+/// Marks the currently executing boot context as Task 0 so the scheduler
+/// can safely preempt and resume the kernel shell.
+pub fn init_primary_task() {
+    unsafe {
+        TASKS[0].id = 0;
+        TASKS[0].parent_id = 0;
+        TASKS[0].state = TaskState::Running;
+        TASKS[0].memory_root = current_memory_root();
+        TASKS[0].fd_table = Some(crate::fd::FileDescriptorTable::new());
+        #[cfg(target_arch = "x86_64")]
+        {
+            crate::gdt::set_kernel_stack(TASKS[0].kernel_stack_top() as u64);
+        }
+        CURRENT_TASK.store(0, Ordering::Relaxed);
+        TASK_INITIALIZED.store(true, Ordering::Release);
     }
 }
 
