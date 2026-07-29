@@ -170,24 +170,17 @@ pub unsafe fn init_aarch64_timer() {
 
 #[cfg(target_arch = "aarch64")]
 pub unsafe fn init_gic_timer_irq() {
-    const GICD_BASE: usize = 0x08000000;
-    const GICC_BASE: usize = 0x08010000;
-unsafe {
-    let gicd_ctlr = GICD_BASE as *mut u32;
-    gicd_ctlr.write_volatile(1);
+    // BCM2837 (QEMU's raspi3b) has no GICv2/GICv3. Core-local IRQs
+    // (generic timer, mailboxes, PMU) route through the separate
+    // "QA7" ARM-local interrupt controller at 0x40000000 instead.
+    const LOCAL_BASE: usize = 0x4000_0000;
+    const CORE0_TIMER_IRQCNTL: usize = LOCAL_BASE + 0x40;
+    const NCNTPNSIRQ_IRQ_ENABLE: u32 = 1 << 1; // routes cntp_* (EL1 NS phys timer)
 
-    let gicd_ipriority = (GICD_BASE + 0x41e) as *mut u8;
-    gicd_ipriority.write_volatile(0); 
-
-    let gicd_isenable = (GICD_BASE + 0x104) as *mut u32;
-    gicd_isenable.write_volatile(1 << 30);
-
-    let gicc_ctlr = GICC_BASE as *mut u32;
-    gicc_ctlr.write_volatile(1);
-
-    let gicc_pmr = (GICC_BASE + 0x04) as *mut u32;
-    gicc_pmr.write_volatile(0xFF);
-  }
+    unsafe {
+        let core0_timer_irqcntl = CORE0_TIMER_IRQCNTL as *mut u32;
+        core0_timer_irqcntl.write_volatile(NCNTPNSIRQ_IRQ_ENABLE);
+    }
 }
 
 #[cfg(target_arch = "aarch64")]
