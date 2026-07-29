@@ -30,7 +30,11 @@ truncate -s "$STAGE2_MAX_BYTES" stage2.bin
 # =========================================================================
 echo "==> Assembling userspace test_program (static ELF64, no libc)"
 nasm -f elf64 userspace/test_program.s -o test_program.o
-ld -e _start -o test_program test_program.o
+# -Ttext places _start at memory::USER_SPACE_BASE (0x8000000000) + 0x10000,
+# not ld's usual ~0x400000 default. elf.rs now refuses to load any PT_LOAD
+# segment below USER_SPACE_BASE -- see its comment for why -- so this has
+# to move, not just the kernel side.
+ld -e _start -Ttext=0x8000010000 -o test_program test_program.o
 rm -f test_program.o
 
 echo "==> Creating Ramdisk (rootfs.tar)"
