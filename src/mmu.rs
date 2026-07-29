@@ -38,8 +38,7 @@ const PAGE_SIZE: usize = 4096;
 /// GIC distributor + CPU interface -- see interrupts::init_gic_timer_irq.
 /// One page each is enough; every register that code touches lives in
 /// the first 4KiB of each block.
-const GICD_BASE: usize = 0x0800_0000;
-const GICC_BASE: usize = 0x0801_0000;
+const LOCAL_BASE: usize = 0x4000_0000; // replaces GICD_BASE/GICC_BASE
 
 /// GPIO + UART0 (PL011) -- see uart.rs's aarch64 `imp` module. One page
 /// covers GPFSEL1/GPPUD/GPPUDCLK0 (GPIO_BASE); a second, adjacent page
@@ -116,8 +115,7 @@ pub unsafe fn init(uart: &mut crate::uart::Uart) {
 
     unsafe {
         identity_map_range(root, 0x0, KERNEL_IDENTITY_MAP_SIZE, normal);
-        identity_map_range(root, GICD_BASE, PAGE_SIZE, device);
-        identity_map_range(root, GICC_BASE, PAGE_SIZE, device);
+        identity_map_range(root, LOCAL_BASE, PAGE_SIZE, device);
         identity_map_range(root, GPIO_BASE, PAGE_SIZE, device);
         identity_map_range(root, UART0_BASE, PAGE_SIZE, device);
         identity_map_range(root, FB_ADDR, FB_SIZE, device);
