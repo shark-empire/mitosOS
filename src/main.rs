@@ -40,7 +40,30 @@ use crate::ramdisk::TarFileSystem;
 use alloc::boxed::Box;
 
 const HEAP_START: usize = 0x150_000;
-const HEAP_SIZE: usize = 0xA0_000;
+
+// x86_64's own bootloader-built identity map (stage2.s) is ~4MiB, so
+// this has to stay comfortably inside that regardless of what AArch64
+// needs -- proven working as-is, not touched.
+#[cfg(target_arch = "x86_64")]
+const HEAP_SIZE: usize = 0xA0_000; // 640KB
+
+// AArch64's fallback "disk" (RamBlockDevice::new(2048), used below in
+// place of a real ATA/SD driver -- see the FAT32 mounting block)
+// allocates exactly 2048 * 512 = 1MiB. The old 640KB heap could never
+// satisfy that regardless of fragmentation -- a single allocation
+// larger than the entire heap fails on a freshly-initialized, totally
+// empty heap just as surely as on a full one. This was already true
+// before any MMU/EL0 work; it just never surfaced because the old
+// AArch64 CI check only grepped for the boot message, never running
+// long enough to reach this allocation.
+//
+// 8MiB leaves comfortable headroom above that 1MiB floor for
+// everything else sharing the heap (VFS/FAT32 structures, the ELF
+// read buffer in shell.rs's run command, etc.), and stays well inside
+// mmu.rs's 32MiB identity map -- bump KERNEL_IDENTITY_MAP_SIZE there
+// first if this ever needs to grow past that.
+#[cfg(target_arch = "aarch64")]
+const HEAP_SIZE: usize = 0x800_000; // 8MB
 
 // Provided by linker_x86.ld / linker_rpi.ld: marks the real end of the
 // kernel's own image (code+rodata+data+bss). Used by protect_boot_memory
