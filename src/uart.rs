@@ -93,6 +93,28 @@ mod imp {
             Uart
         }
 
+        /// A handle to the already-initialized UART, without touching
+        /// any hardware registers. `Uart` carries no state -- every
+        /// method operates on a fixed MMIO address, not `self` -- so
+        /// having many `Uart` values alive at once, from many places,
+        /// is completely fine. Use this everywhere except the one
+        /// real `init()` call at the top of `kernel_main`.
+        ///
+        /// What's NOT fine is calling `init()` again: it reruns the
+        /// one-time hardware bring-up, including
+        /// `write_reg(UART0_ICR, 0x7FF)`, which clears the pending
+        /// RX-interrupt condition. If a byte has arrived but
+        /// `handle_irq()` hasn't drained it into the ring buffer yet,
+        /// that clear silently cancels the interrupt that would have
+        /// triggered the drain -- the byte just sits in hardware,
+        /// invisible to everything above it, effectively lost. This
+        /// happened for real: background_worker_2 (main.rs) used to
+        /// call `init()` on every loop iteration, roughly every 60ms,
+        /// which was enough to reliably eat shell input sent from CI.
+        pub fn shared() -> Self {
+            Uart
+        }
+
         /// Unmasks RXIM (FIFO crossed trigger level) and RTIM
         /// (timeout — fires even for one byte that never fills the
         /// FIFO). Both are needed or a lone keystroke can sit
@@ -199,6 +221,26 @@ mod imp {
                 outb(COM1 + 2, 0xC7);
                 outb(COM1 + 4, 0x0B);
             }
+            Uart
+        }
+
+        /// A handle to the already-initialized UART, without touching
+        /// any hardware ports. `Uart` carries no state -- every method
+        /// operates on a fixed port address, not `self` -- so having
+        /// many `Uart` values alive at once, from many places, is
+        /// completely fine. Use this everywhere except the one real
+        /// `init()` call at the top of `kernel_main`.
+        ///
+        /// What's NOT fine is calling `init()` again:
+        /// `outb(COM1 + 2, 0xC7)` sets the FCR with both the RX-clear
+        /// and TX-clear bits -- it unconditionally discards whatever's
+        /// sitting in the hardware FIFOs, including a byte that
+        /// arrived but hasn't been drained into the ring buffer by
+        /// handle_irq() yet. This happened for real: background_worker_2
+        /// (main.rs) used to call `init()` on every loop iteration,
+        /// roughly every 60ms, which was enough to reliably eat shell
+        /// input sent from CI.
+        pub fn shared() -> Self {
             Uart
         }
 
