@@ -210,6 +210,43 @@ impl<const N: usize> BitmapAllocator<N> {
 pub static PHYSICAL_PMM: Mutex<BitmapAllocator<1024>> = Mutex::new(BitmapAllocator::new());
 
 /// Bridge for the VMM
+/// Start of the region every process's private (ELF + stack) mappings
+/// must live in -- currently enforced by elf.rs rejecting any PT_LOAD
+/// segment below this, and by convention in task::allocate_user_stack.
+///
+/// This is `1 << 39`: the first byte of PML4 entry 1 on x86_64 / L0
+/// entry 1 on AArch64 (each top-level entry spans 512GB). The kernel's
+/// own identity map -- a few MiB on x86_64, 32MiB on AArch64 -- lives
+/// entirely inside entry 0, alongside nothing else, by design.
+///
+/// The reason this constant exists at all: create_process_page_table
+/// gives every process a *copy* of the kernel's own top-level table,
+/// so entry 0 (and only entry 0, since nothing else is populated yet)
+/// starts out shared -- same physical L1/L2/L3 sub-tables as the
+/// kernel and as every other process, which is exactly what's wanted
+/// for the kernel's own mappings to stay reachable after a TTBR/CR3
+/// switch. But "shared" cuts both ways: if a process's own private
+/// mappings (ELF segments, user stack) *also* landed under entry 0 --
+/// which they used to, back when the user stack sat at a fixed low
+/// address and ELF binaries linked near 0x400000, both comfortably
+/// inside the first 512GB -- walking down to add those mappings would
+/// walk into the *same shared* sub-tables, silently splicing one
+/// process's "private" pages into the structure every other process
+/// and the kernel itself also uses. Two processes with overlapping
+/// virtual addresses (entirely plausible -- most things link low by
+/// default) would alias each other's memory instead of being isolated
+/// from it, and a process's PT_LOAD could just as easily corrupt the
+/// kernel's own identity-mapped entries.
+///
+/// Every top-level entry from 1 onward is unpopulated in the kernel's
+/// own table (nothing kernel-side has ever needed an address that
+/// high), so it's unpopulated in every process's copy too -- meaning
+/// the *first* mapping any process makes above this line forces a
+/// brand-new, private L1/L2/L3 chain for that one process, with
+/// nothing shared. That's the actual isolation boundary; the
+/// top-level-table copy on its own only ever provided sharing.
+pub const USER_SPACE_BASE: usize = 1 << 39;
+
 pub fn vmm_alloc_frame() -> Option<usize> {
     PHYSICAL_PMM.lock().allocate_next_frame().map(|idx| idx * PAGE_SIZE)
 }
@@ -335,12 +372,21 @@ pub unsafe fn create_process_page_table() -> Option<usize> {
             // would fault immediately.
             //
             // Note: this shares the underlying page-table structures
-            // with the parent, not just the mappings -- fine for a
-            // single isolated process, but two processes (or a process
-            // and the kernel) both extending the *same* shared PD entry
-            // for their own private mappings would step on each other.
-            // Worth revisiting with a proper private low-memory region
-            // per process before running multiple concurrent ones.
+            // with the parent, not just the mappings -- by itself that
+            // would let two processes (or a process and the kernel)
+            // step on each other by both extending the same shared PD
+            // entry for their own private mappings. What actually
+            // prevents that: PML4 entries 0..256 only ever have entry 0
+            // populated (everything the kernel maps -- identity range,
+            // MMIO -- fits inside the first 512GB), and every process's
+            // *private* mappings are required to live at
+            // memory::USER_SPACE_BASE or above (entry 1+, see its doc
+            // comment and elf.rs's segment validation), which starts
+            // out unpopulated in this copy. The first private mapping
+            // any process makes forces its own fresh PDPT/PD/PT chain,
+            // not a walk into the shared one -- the sharing here is
+            // real but confined entirely to entry 0, which nothing
+            // process-private is allowed to touch.
             for i in 0..256 {
                 new_root.add(i).write(active_root.add(i).read());
             }
@@ -361,9 +407,12 @@ pub unsafe fn create_process_page_table() -> Option<usize> {
         // to reason about here, so this just copies the whole 4KiB
         // root table verbatim rather than picking indices.
         //
-        // Same aliasing note as x86_64 too: this shares the
-        // underlying L1/L2/L3 tables with the kernel, not just the
-        // mappings -- fine for one process at a time.
+        // Same aliasing note as x86_64, same resolution: L0 index 0
+        // is shared (kernel-only, nothing process-private is allowed
+        // there), index 1+ starts unpopulated in this copy, and
+        // memory::USER_SPACE_BASE (index 1's start) is where every
+        // process's own mappings are required to live -- see its doc
+        // comment for the full reasoning.
         let kernel_root = crate::mmu::kernel_root();
         if kernel_root != 0 {
             unsafe {
