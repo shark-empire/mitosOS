@@ -165,6 +165,8 @@ if let Some(frame) = crate::memory::alloc_frame() {
     
 
     // 2. GRAPHICS: Initialize the screen
+    #[cfg(target_arch = "x86_64")]
+        {
     const FB_ADDR: usize = 0xFD000000;
     const FB_WIDTH: usize = 1024;
     const FB_HEIGHT: usize = 768;
@@ -229,6 +231,7 @@ if let Some(frame) = crate::memory::alloc_frame() {
             let _ = writeln!(uart, "mitosOS: FAT32 mount skipped ({e})");
             fb.draw_string(10, 100, "FAT32 (ram): skipped", Color::MAGENTA);
         }
+      }
     }
 
     // --- FAT32 Mounting (real ATA disk) ---
