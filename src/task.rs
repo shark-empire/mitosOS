@@ -370,15 +370,16 @@ fn allocate_isolated_page_table(parent_root: usize) -> usize {
 /// kernel memory, never user-accessible) regardless of mode. Returns the
 /// *top* of the stack (stacks grow down towards lower addresses).
 ///
-/// The address is fixed and arbitrary for now -- chosen well clear of
-/// where an ELF is conventionally loaded (0x400000+) so the two don't
-/// collide for a single process. It does *not* yet account for two
-/// processes both wanting this same address (see the aliasing note on
-/// create_process_page_table in memory.rs) -- fine for one process at a
-/// time, worth revisiting alongside that.
+/// USER_SPACE_BASE + 0x1000_0000 (256MB into the private region) so
+/// there's plenty of room below it for an ELF binary linked near the
+/// start of that region, per memory::USER_SPACE_BASE's doc comment.
+/// Every process uses this same address -- that's fine now, not a
+/// collision: each process's copy of the top-level table has this
+/// index unpopulated, so mapping here forces a fresh, private
+/// PDPT/PD/PT chain per process rather than walking into a shared one.
 #[cfg(target_arch = "x86_64")]
 fn allocate_user_stack(page_table_root: usize) -> Option<usize> {
-    const USER_STACK_TOP: usize = 0x1000_0000; // 256MB
+    const USER_STACK_TOP: usize = crate::memory::USER_SPACE_BASE + 0x1000_0000;
     const USER_STACK_PAGES: usize = 4; // 16KB
     const PAGE_SIZE: usize = 4096;
 
@@ -408,14 +409,10 @@ fn allocate_user_stack(page_table_root: usize) -> Option<usize> {
 
 /// AArch64 equivalent of the x86_64 function above -- same address,
 /// same page count, same reasoning, using vmm::arch::map_page's
-/// AArch64 branch instead of the x86_64 one. 0x1000_0000 (256MB) is
-/// deliberately clear of both this kernel's own identity-mapped low
-/// range (32MiB, see mmu.rs) and wherever a linked ELF binary
-/// conventionally lands, so the two can't collide for a single
-/// process. Same not-yet-handled-for-two-processes caveat as x86_64.
+/// AArch64 branch instead of the x86_64 one.
 #[cfg(target_arch = "aarch64")]
 fn allocate_user_stack(page_table_root: usize) -> Option<usize> {
-    const USER_STACK_TOP: usize = 0x1000_0000; // 256MB
+    const USER_STACK_TOP: usize = crate::memory::USER_SPACE_BASE + 0x1000_0000;
     const USER_STACK_PAGES: usize = 4; // 16KB
     const PAGE_SIZE: usize = 4096;
 
@@ -532,10 +529,45 @@ pub extern "C" fn run_schedule(current_sp: usize) -> usize {
                 let next_root = TASKS[next_idx].memory_root;
                 if next_root != TASKS[current_idx].memory_root && next_root != 0 {
                     #[cfg(target_arch = "x86_64")]
+                    // mov-to-CR3 flushes all non-global TLB entries as
+                    // an architectural side effect -- nothing extra
+                    // needed here for the same reason AArch64's branch
+                    // below needs an explicit tlbi.
                     core::arch::asm!("mov cr3, {}", in(reg) next_root, options(nostack, preserves_flags));
                     
                     #[cfg(target_arch = "aarch64")]
-                    core::arch::asm!("msr ttbr0_el1, {}; isb", in(reg) next_root, options(nostack, preserves_flags));
+                    // Unlike x86_64's mov-to-CR3, msr ttbr0_el1 does
+                    // *not* implicitly flush anything -- without the
+                    // tlbi here, a stale entry cached from whichever
+                    // process last used this same virtual address
+                    // (every process's stack sits at the same address,
+                    // memory::USER_SPACE_BASE + 0x1000_0000, by design)
+                    // could still resolve to the *previous* occupant's
+                    // physical frame instead of faulting through to
+                    // the new page table, silently handing one process
+                    // read/write access to another's private memory.
+                    // vmalle1 is a blunt, whole-TLB instrument -- ASID
+                    // tagging would let this scope down to just the
+                    // outgoing task's entries and skip the flush
+                    // entirely on a cache hit, but that requires
+                    // invalidating by ASID specifically when a task
+                    // slot is *reused* by a new process (same task ID,
+                    // different address space underneath), which has
+                    // enough edge cases to get subtly wrong that it's
+                    // not worth the risk without being able to test it.
+                    // A full flush on every switch is the same cost
+                    // x86_64 already unconditionally pays via CR3, so
+                    // this isn't a regression relative to that, just
+                    // an explicit version of what x86_64 gets for free.
+                    core::arch::asm!(
+                        "msr ttbr0_el1, {root}",
+                        "isb",
+                        "tlbi vmalle1",
+                        "dsb ish",
+                        "isb",
+                        root = in(reg) next_root,
+                        options(nostack, preserves_flags),
+                    );
                 }
 
                 // RSP0 has to reflect whichever task is about to run,
