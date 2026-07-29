@@ -51,7 +51,7 @@ impl FileDescriptor for UartFd {
     }
 
     fn write(&mut self, buf: &[u8]) -> Result<usize, FdError> {
-        let mut uart = unsafe { crate::uart::Uart::init() };
+        let mut uart = crate::uart::Uart::shared();
         for &b in buf {
             let _ = core::fmt::Write::write_char(&mut uart, b as char);
         }
