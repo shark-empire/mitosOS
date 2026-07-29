@@ -108,7 +108,7 @@ mod imp {
             _ => "Unhandled synchronous exception",
         };
 
-        let mut uart = unsafe { crate::uart::Uart::init() };
+        let mut uart = crate::uart::Uart::shared();
         let _ = writeln!(uart, "\r\n!!! AArch64 EXCEPTION: {name} (EC=0x{ec:02x}) !!!");
         let _ = writeln!(uart, "    ESR_EL1 = 0x{esr:016x}");
         let _ = writeln!(uart, "    FAR_EL1 = 0x{far:016x}  (faulting address)");
@@ -293,7 +293,7 @@ mod imp {
             pic_outb(0xA1, 0x02); 
             pic_outb(0x21, 0x01); 
             pic_outb(0xA1, 0x01); 
-            pic_outb(0x21, 0xEE);
+            pic_outb(0x21, 0xEF);
             pic_outb(0xA1, 0xFF); 
         }
     }
@@ -414,7 +414,7 @@ mod imp {
             _ => "Unhandled Exception",
         };
 
-        let mut uart = unsafe { crate::uart::Uart::init() };
+        let mut uart = crate::uart::Uart::shared();
         let _ = writeln!(uart, "\r\n!!! CPU EXCEPTION: {name} (vector {vector}) !!!");
         let _ = writeln!(uart, "    error_code   = 0x{error_code:x}");
         let _ = writeln!(uart, "    faulting rip = 0x{rip:x}");
