@@ -11,6 +11,7 @@ pub enum MemoryError {
     InvalidAddress,
 }
 
+
 #[cfg(target_arch = "x86_64")]
 pub mod arch {
     use super::*;
@@ -41,6 +42,11 @@ pub mod arch {
             }
             self.0 = raw as u64;
         }
+
+        /// Ensures user-mode (Ring 3) permissions are set on parent table entries
+        pub fn ensure_user_accessible(&mut self) {
+            self.0 |= 1 << 2; // Set Bit 2 (U/S)
+        }
     }
 
     #[repr(align(4096))]
@@ -48,10 +54,6 @@ pub mod arch {
         pub entries: [PageTableEntry; 512],
     }
 
-    /// # Safety
-    /// `root` must point to a valid, zeroed (or already-populated)
-    /// `PageTable` that the caller owns exclusively for the duration
-    /// of this call.
     pub unsafe fn map_page(
         root: *mut PageTable,
         virt: usize,
@@ -64,12 +66,13 @@ pub mod arch {
 
         let pml4_idx = (virt >> 39) & 0x1FF;
         let pdpt_idx = (virt >> 30) & 0x1FF;
-        let pd_idx = (virt >> 21) & 0x1FF;
-        let pt_idx = (virt >> 12) & 0x1FF;
+        let pd_idx   = (virt >> 21) & 0x1FF;
+        let pt_idx   = (virt >> 12) & 0x1FF;
 
-        let pdpt = unsafe { next_table(&mut (*root).entries[pml4_idx])? };
-        let pd = unsafe { next_table(&mut (*pdpt).entries[pdpt_idx])? };
-        let pt = unsafe { next_table(&mut (*pd).entries[pd_idx])? };
+        // Pass `flags.user_accessible` down to ensure parent entries get the USER bit set
+        let pdpt = unsafe { next_table(&mut (*root).entries[pml4_idx], flags.user_accessible)? };
+        let pd   = unsafe { next_table(&mut (*pdpt).entries[pdpt_idx], flags.user_accessible)? };
+        let pt   = unsafe { next_table(&mut (*pd).entries[pd_idx], flags.user_accessible)? };
 
         let entry = unsafe { &mut (*pt).entries[pt_idx] };
         if entry.is_present() {
@@ -83,10 +86,10 @@ pub mod arch {
         Ok(())
     }
 
-    /// # Safety
-    /// `entry` must be a live entry inside a `PageTable` the caller owns
-    /// exclusively.
-    unsafe fn next_table(entry: &mut PageTableEntry) -> Result<*mut PageTable, MemoryError> {
+    unsafe fn next_table(
+        entry: &mut PageTableEntry,
+        user_accessible: bool,
+    ) -> Result<*mut PageTable, MemoryError> {
         if !entry.is_present() {
             let frame = vmm_alloc_frame().ok_or(MemoryError::FrameAllocationFailed)?;
             unsafe {
@@ -96,15 +99,19 @@ pub mod arch {
                 frame,
                 MapFlags {
                     writable: true,
-                    user_accessible: true,
+                    user_accessible: true, // New intermediate tables must be user-accessible
                     execute_disable: false,
                     device: false,
                 },
             );
+        } else if user_accessible {
+            // CRITICAL: If the table already exists, upgrade its permissions so Ring 3 can traverse it!
+            entry.ensure_user_accessible();
         }
         Ok(entry.physical_address() as *mut PageTable)
     }
 }
+
 
 #[cfg(target_arch = "aarch64")]
 pub mod arch {
