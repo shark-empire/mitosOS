@@ -293,7 +293,7 @@ mod imp {
             pic_outb(0xA1, 0x02); 
             pic_outb(0x21, 0x01); 
             pic_outb(0xA1, 0x01); 
-            pic_outb(0x21, 0xEF);
+            pic_outb(0x21, 0xEE);
             pic_outb(0xA1, 0xFF); 
         }
     }
