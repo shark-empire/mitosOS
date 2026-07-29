@@ -251,14 +251,14 @@ fn park() -> ! {
 
 // Add this function anywhere in src/main.rs
 extern "C" fn background_worker_2() -> ! {
-    let mut uart = unsafe { crate::uart::Uart::init() };
     for _ in 0..5 {
-        let _ = core::fmt::Write::write_str(&mut uart, "[Worker 2: Tick]\n");
+        // Simulate work without touching the UART hardware/FIFOs
         for _ in 0..200_000 {
             core::hint::spin_loop();
         }
         crate::task::yield_now();
     }
+    
     // terminate this task once done
     crate::task::exit();
 }
