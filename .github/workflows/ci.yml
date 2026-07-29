@@ -44,7 +44,10 @@ jobs:
           mkdir -p rootfs/bin
           echo "Hello from mitosOS in-memory filesystem!" > rootfs/test.txt
           aarch64-linux-gnu-as -o test_program_aarch64.o userspace/test_program_aarch64.s
-          aarch64-linux-gnu-ld -e _start -o rootfs/bin/test_program test_program_aarch64.o
+          # -Ttext places _start at memory::USER_SPACE_BASE (0x8000000000)
+          # + 0x10000, matching build.sh's x86_64 link step -- elf.rs
+          # refuses to load anything below USER_SPACE_BASE now.
+          aarch64-linux-gnu-ld -e _start -Ttext=0x8000010000 -o rootfs/bin/test_program test_program_aarch64.o
           rm -f test_program_aarch64.o
           tar -cf rootfs.tar -C rootfs bin/test_program test.txt
 
