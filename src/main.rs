@@ -54,10 +54,7 @@ unsafe extern "C" {
 pub extern "C" fn kmain() -> ! {
     let mut uart = unsafe { uart::Uart::init() };
 
-    // Inside kmain(), before enabling interrupts or running the shell:
-// Register the initial kernel context into Task slot 0 so the scheduler can track it.
-     #[cfg(target_arch = "x86_64")]
-crate::task::init_primary_task();
+    
 
     unsafe {
         #[cfg(target_arch = "x86_64")]
