@@ -232,23 +232,7 @@ impl Task {
     }
 }
 
-/// Marks the currently executing boot context as Task 0 so the scheduler
-/// can safely preempt and resume the kernel shell.
-pub fn init_primary_task() {
-    unsafe {
-        TASKS[0].id = 0;
-        TASKS[0].parent_id = 0;
-        TASKS[0].state = TaskState::Running;
-        TASKS[0].memory_root = current_memory_root();
-        TASKS[0].fd_table = Some(crate::fd::FileDescriptorTable::new());
-        #[cfg(target_arch = "x86_64")]
-        {
-            crate::gdt::set_kernel_stack(TASKS[0].kernel_stack_top() as u64);
-        }
-        CURRENT_TASK.store(0, Ordering::Relaxed);
-        TASK_INITIALIZED.store(true, Ordering::Release);
-    }
-}
+
 
 /// Gets the ID of the currently executing task.
 pub fn current_task_id() -> usize {
