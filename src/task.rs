@@ -130,6 +130,18 @@ impl Task {
 
     /// Initializes the stack frame, registers, and memory boundaries for a new task.
     ///
+    /// `memory_root` is installed as-is -- this does *not* allocate or
+    /// clone a page table itself. Callers decide what root a task gets:
+    /// `spawn` derives one (sharing the caller's for `SharedThread`,
+    /// cloning a fresh one for a generic `IsolatedProcess`); `spawn_from_elf`
+    /// (via `spawn_isolated_at`) passes in a table it already built and
+    /// mapped the ELF's segments and stack into. `init` doesn't get a say
+    /// in that decision -- if it derived its own here, callers who need an
+    /// *already-populated* table (like `spawn_from_elf`) would have theirs
+    /// silently discarded in favor of an empty one, and this task's entry
+    /// point would page-fault the instant it tried to fetch its first
+    /// instruction.
+    ///
     /// `user_stack_top` is only meaningful for `ExecutionMode::IsolatedProcess`
     /// -- pass `0` for `SharedThread` (kernel-mode tasks don't have one).
     pub fn init(
@@ -137,20 +149,14 @@ impl Task {
         id: usize, 
         entry: extern "C" fn() -> !, 
         mode: ExecutionMode, 
-        parent_memory_root: usize,
+        memory_root: usize,
         user_stack_top: usize,
     ) {
         self.id = id;
         self.parent_id = if mode == ExecutionMode::SharedThread { id } else { id };
         self.state = TaskState::Ready;
         self.fd_table = Some(crate::fd::FileDescriptorTable::new()); 
-
-        self.memory_root = match mode {
-            ExecutionMode::SharedThread => parent_memory_root,
-            ExecutionMode::IsolatedProcess => {
-                allocate_isolated_page_table(parent_memory_root)
-            }
-        };
+        self.memory_root = memory_root;
 
         // `stack` is where the very first resume-frame lives either way
         // -- that's what makes the *first* switch into any task, ring-3
@@ -331,11 +337,15 @@ fn current_memory_root() -> usize {
 /// -- pass `0` for ordinary kernel-mode (`SharedThread`) tasks.
 pub fn spawn(entry_point: extern "C" fn() -> !, mode: ExecutionMode, user_stack_top: usize) -> bool {
     unsafe {
-        let parent_root = current_memory_root();
+        let caller_root = current_memory_root();
+        let memory_root = match mode {
+            ExecutionMode::SharedThread => caller_root,
+            ExecutionMode::IsolatedProcess => allocate_isolated_page_table(caller_root),
+        };
 
         for i in 0..MAX_TASKS {
             if TASKS[i].state == TaskState::Terminated {
-                TASKS[i].init(i, entry_point, mode, parent_root, user_stack_top);
+                TASKS[i].init(i, entry_point, mode, memory_root, user_stack_top);
 
                 if !TASK_INITIALIZED.load(Ordering::Acquire) {
                     TASKS[0].state = TaskState::Running;
@@ -358,6 +368,41 @@ pub fn spawn(entry_point: extern "C" fn() -> !, mode: ExecutionMode, user_stack_
 pub fn spawn_at(entry_addr: usize, mode: ExecutionMode, user_stack_top: usize) -> bool {
     let entry_point: extern "C" fn() -> ! = unsafe { core::mem::transmute(entry_addr) };
     spawn(entry_point, mode, user_stack_top)
+}
+
+/// Registers a new `IsolatedProcess` task using a page table root the
+/// caller has *already built and populated* -- unlike `spawn`/`spawn_at`,
+/// this never calls `allocate_isolated_page_table` itself.
+///
+/// `spawn_from_elf` needs exactly this. It builds the process's page
+/// table up front so `elf::load_elf_to_process` and `allocate_user_stack`
+/// have somewhere real to map into -- before this task is even
+/// registered, let alone running -- then has to hand *that exact table*
+/// here. Going through `spawn`/`spawn_at` instead would derive a brand
+/// new, empty table for `IsolatedProcess` (see `spawn`) and install that
+/// one, leaving the real one -- the one with the ELF's segments and
+/// stack already mapped into it -- orphaned. The task's entry point and
+/// stack would both be valid-looking addresses that simply aren't
+/// mapped in whatever table actually lands in CR3/TTBR0, so the very
+/// first instruction fetch after the ring-3 transition page-faults.
+/// (This is exactly what was happening before this function existed.)
+fn spawn_isolated_at(entry_addr: usize, memory_root: usize, user_stack_top: usize) -> bool {
+    let entry_point: extern "C" fn() -> ! = unsafe { core::mem::transmute(entry_addr) };
+    unsafe {
+        for i in 0..MAX_TASKS {
+            if TASKS[i].state == TaskState::Terminated {
+                TASKS[i].init(i, entry_point, ExecutionMode::IsolatedProcess, memory_root, user_stack_top);
+
+                if !TASK_INITIALIZED.load(Ordering::Acquire) {
+                    TASKS[0].state = TaskState::Running;
+                    TASK_INITIALIZED.store(true, Ordering::Release);
+                }
+
+                return true;
+            }
+        }
+    }
+    false
 }
 
 
@@ -462,9 +507,11 @@ pub fn spawn_from_elf(elf_bytes: &[u8]) -> bool {
         None => return false,
     };
 
-    // 4. Spawn the task using the entry address returned by the ELF loader
-    //    and the stack just mapped for it.
-    spawn_at(entry_point, ExecutionMode::IsolatedProcess, user_stack_top)
+    // 4. Register the task with *this exact* page table -- the one that
+    //    steps 2 and 3 actually mapped the ELF's segments and stack
+    //    into. See spawn_isolated_at for why this can't go through the
+    //    ordinary spawn_at/spawn path.
+    spawn_isolated_at(entry_point, page_table_root, user_stack_top)
 }
 
 
