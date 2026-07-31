@@ -170,25 +170,12 @@ pub unsafe fn init_aarch64_timer() {
 
 #[cfg(target_arch = "aarch64")]
 pub unsafe fn init_gic_timer_irq() {
-    // BCM2837 -- what QEMU's `-M raspi3b` actually models -- has no
-    // GICv2/GICv3 at all (that's a "virt" machine thing). Every write
-    // this function used to make, to 0x08000000/0x08010000, lands on
-    // plain unbacked address space: no fault, no effect, and
-    // cntp_ctl_el0.ISTATUS can go high forever without an IRQ ever
-    // reaching the core. Routing for core-local sources (the ARM
-    // generic timer, mailboxes, PMU) instead goes through the
-    // separate "QA7" ARM-local interrupt controller at 0x40000000.
-    //
-    // CORE0_TIMER_IRQCNTL (local base + 0x40) is the per-core
-    // register that actually decides which local timer sources reach
-    // that core's IRQ line. Bit 1 = nCNTPNSIRQ IRQ enable -- the
-    // Non-secure EL1 physical timer, which is exactly what
-    // cntp_tval_el0/cntp_ctl_el0 (init_aarch64_timer/reload_timer)
-    // control. No distributor/CPU-interface priority masks or
-    // enables are needed because there is no distributor here.
+    // BCM2837 (QEMU's raspi3b) has no GICv2/GICv3. Core-local IRQs
+    // (generic timer, mailboxes, PMU) route through the separate
+    // "QA7" ARM-local interrupt controller at 0x40000000 instead.
     const LOCAL_BASE: usize = 0x4000_0000;
     const CORE0_TIMER_IRQCNTL: usize = LOCAL_BASE + 0x40;
-    const NCNTPNSIRQ_IRQ_ENABLE: u32 = 1 << 1;
+    const NCNTPNSIRQ_IRQ_ENABLE: u32 = 1 << 1; // routes cntp_* (EL1 NS phys timer)
 
     unsafe {
         let core0_timer_irqcntl = CORE0_TIMER_IRQCNTL as *mut u32;
@@ -299,23 +286,6 @@ mod imp {
             pic_outb(0xA1, 0x02); 
             pic_outb(0x21, 0x01); 
             pic_outb(0xA1, 0x01); 
-            // OCW1 (interrupt mask register): 0 = unmasked. Bit0 = IRQ0
-            // (PIT, timer_handler_stub -> schedule()/run_schedule()),
-            // bit4 = IRQ4 (COM1 UART). Everything else stays masked --
-            // no handler exists for those lines. 0xEE = 1110_1110:
-            // unmasks bit0 and bit4, masks the rest.
-            //
-            // This used to be 0xEF (1110_1111), which unmasks *only*
-            // bit4. IRQ0 stayed masked, so the PIT hardware was ticking
-            // (init_pit() ran fine) but the interrupt itself never
-            // reached the CPU -- timer_handler_stub, and therefore
-            // schedule()/run_schedule(), never ran a single time. UART
-            // input still worked (it's on the one bit that *was*
-            // unmasked, and uart_handler_stub doesn't call schedule()
-            // at all), which is why the shell looked fully responsive
-            // while every task-switch-dependent thing -- background_worker_2's
-            // "[Worker 2: Tick]" print, and any spawned ring-3 process
-            // ever actually being dispatched -- silently never happened.
             pic_outb(0x21, 0xEE);
             pic_outb(0xA1, 0xFF); 
         }
@@ -600,12 +570,17 @@ core::arch::global_asm!(
       // =========================================================
 
       // --- Synchronous Exception Slot (Current EL, SP_x) ---
-      // Short enough (5 instructions) to stay inline.
-      mrs x0, esr_el1
-      mrs x1, far_el1
-      mrs x2, elr_el1
-      bl handle_el1_sync_exception
-      b .
+      // Used to stay inline (esr/far/elr into x0-x2, straight to
+      // handle_el1_sync_exception, which never returns) back when
+      // every Current-EL sync exception really was fatal. Not true
+      // anymore: task::yield_now's `svc #0` (background_worker /
+      // background_worker_2 in main.rs) is a deliberate, recoverable
+      // one -- AArch64 routes SVC to the *current* EL when the caller
+      // is already at or above the target, so a voluntary yield from
+      // EL1 lands here too, not in the "Lower EL" vectors below. That
+      // needs the full save/dispatch/restore el1_sync_body provides
+      // (out of line -- doesn't fit the 128-byte slot budget).
+      b el1_sync_body
       .balign 128
       
       // --- IRQ Handler Vector Slot (Current EL, SP_x) ---
@@ -671,6 +646,87 @@ core::arch::global_asm!(
       // table region, so none of the 128-byte-per-slot budget applies
       // here -- these can be as long as they need to be.
       // =========================================================
+
+      // --- Current EL, SP_x Synchronous body ---
+      // Same context shape as el1_irq_body (272-byte frame, same
+      // save/restore) because a voluntary yield needs a *real*
+      // context switch -- save this task's registers, hand back a
+      // different task's -- not just a function call. ESR_EL1.EC
+      // 0x15 is task::yield_now's `svc #0`; anything else reaching
+      // this vector is a genuine EL1 fault (bad pointer, illegal
+      // instruction, ...) and still goes to handle_el1_sync_exception,
+      // reported and fatal exactly as before -- only the deliberate
+      // SVC case is new.
+      el1_sync_body:
+      sub sp, sp, #272
+
+      stp x0, x1, [sp, #0]
+      stp x2, x3, [sp, #16]
+      stp x4, x5, [sp, #32]
+      stp x6, x7, [sp, #48]
+      stp x8, x9, [sp, #64]
+      stp x10, x11, [sp, #80]
+      stp x12, x13, [sp, #96]
+      stp x14, x15, [sp, #112]
+      stp x16, x17, [sp, #128]
+      stp x18, x19, [sp, #144]
+      stp x20, x21, [sp, #160]
+      stp x22, x23, [sp, #176]
+      stp x24, x25, [sp, #192]
+      stp x26, x27, [sp, #208]
+      stp x28, x29, [sp, #224]
+      str x30, [sp, #240]
+
+      mrs x0, spsr_el1
+      mrs x1, elr_el1
+      stp x0, x1, [sp, #248]
+      mrs x0, sp_el0
+      str x0, [sp, #264]
+
+      mrs x0, esr_el1
+      lsr x0, x0, #26
+      and x0, x0, #0x3F
+      cmp x0, #0x15
+      b.ne el1_sync_fault
+
+      mov x0, sp
+      bl schedule
+      mov sp, x0
+      b   el1_sync_restore
+
+      el1_sync_fault:
+      mrs x0, esr_el1
+      mrs x1, far_el1
+      mrs x2, elr_el1
+      bl handle_el1_sync_exception
+      // handle_el1_sync_exception -> ! -- never returns here.
+
+      el1_sync_restore:
+      ldp x0, x1, [sp, #248]
+      msr spsr_el1, x0
+      msr elr_el1, x1
+      ldr x0, [sp, #264]
+      msr sp_el0, x0
+
+      ldp x0, x1, [sp, #0]
+      ldp x2, x3, [sp, #16]
+      ldp x4, x5, [sp, #32]
+      ldp x6, x7, [sp, #48]
+      ldp x8, x9, [sp, #64]
+      ldp x10, x11, [sp, #80]
+      ldp x12, x13, [sp, #96]
+      ldp x14, x15, [sp, #112]
+      ldp x16, x17, [sp, #128]
+      ldp x18, x19, [sp, #144]
+      ldp x20, x21, [sp, #160]
+      ldp x22, x23, [sp, #176]
+      ldp x24, x25, [sp, #192]
+      ldp x26, x27, [sp, #208]
+      ldp x28, x29, [sp, #224]
+      ldr x30, [sp, #240]
+
+      add sp, sp, #272
+      eret
 
       // --- Current EL, SP_x IRQ body ---
       // Saves/restores sp_el0 even though *this* context never touches
