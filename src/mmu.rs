@@ -35,10 +35,14 @@ const KERNEL_IDENTITY_MAP_SIZE: usize = 32 * 1024 * 1024; // 32MiB
 
 const PAGE_SIZE: usize = 4096;
 
-/// GIC distributor + CPU interface -- see interrupts::init_gic_timer_irq.
-/// One page each is enough; every register that code touches lives in
-/// the first 4KiB of each block.
-const LOCAL_BASE: usize = 0x4000_0000; // replaces GICD_BASE/GICC_BASE
+/// QA7 ARM-local interrupt controller -- see
+/// interrupts::init_gic_timer_irq (raspi3b/BCM2837 has no real GIC;
+/// this is what actually routes the generic timer IRQ to a core).
+/// One page is enough; CORE0_TIMER_IRQCNTL lives at offset 0x40.
+/// interrupts::init() (and this write) runs before this MMU init, so
+/// nothing today reads or writes this range post-MMU-enable -- mapped
+/// anyway so a later addition here doesn't inherit a stale mapping.
+const LOCAL_BASE: usize = 0x4000_0000;
 
 /// GPIO + UART0 (PL011) -- see uart.rs's aarch64 `imp` module. One page
 /// covers GPFSEL1/GPPUD/GPPUDCLK0 (GPIO_BASE); a second, adjacent page
@@ -91,9 +95,10 @@ unsafe fn read_pa_range_bits() -> u64 {
 ///
 /// Must run after the physical frame allocator is usable
 /// (protect_boot_memory) and before anything else in kmain touches
-/// GIC or UART MMIO again -- interrupts::init() already ran its
-/// one-time GIC setup before this, pre-MMU, so that's unaffected;
-/// what matters is everything *after* this call.
+/// the QA7 local controller or UART MMIO again -- interrupts::init()
+/// already ran its one-time local-controller setup before this,
+/// pre-MMU, so that's unaffected; what matters is everything *after*
+/// this call.
 ///
 /// # Safety
 /// Must be called exactly once, from core 0, this early in boot.
