@@ -170,12 +170,25 @@ pub unsafe fn init_aarch64_timer() {
 
 #[cfg(target_arch = "aarch64")]
 pub unsafe fn init_gic_timer_irq() {
-    // BCM2837 (QEMU's raspi3b) has no GICv2/GICv3. Core-local IRQs
-    // (generic timer, mailboxes, PMU) route through the separate
-    // "QA7" ARM-local interrupt controller at 0x40000000 instead.
+    // BCM2837 -- what QEMU's `-M raspi3b` actually models -- has no
+    // GICv2/GICv3 at all (that's a "virt" machine thing). Every write
+    // this function used to make, to 0x08000000/0x08010000, lands on
+    // plain unbacked address space: no fault, no effect, and
+    // cntp_ctl_el0.ISTATUS can go high forever without an IRQ ever
+    // reaching the core. Routing for core-local sources (the ARM
+    // generic timer, mailboxes, PMU) instead goes through the
+    // separate "QA7" ARM-local interrupt controller at 0x40000000.
+    //
+    // CORE0_TIMER_IRQCNTL (local base + 0x40) is the per-core
+    // register that actually decides which local timer sources reach
+    // that core's IRQ line. Bit 1 = nCNTPNSIRQ IRQ enable -- the
+    // Non-secure EL1 physical timer, which is exactly what
+    // cntp_tval_el0/cntp_ctl_el0 (init_aarch64_timer/reload_timer)
+    // control. No distributor/CPU-interface priority masks or
+    // enables are needed because there is no distributor here.
     const LOCAL_BASE: usize = 0x4000_0000;
     const CORE0_TIMER_IRQCNTL: usize = LOCAL_BASE + 0x40;
-    const NCNTPNSIRQ_IRQ_ENABLE: u32 = 1 << 1; // routes cntp_* (EL1 NS phys timer)
+    const NCNTPNSIRQ_IRQ_ENABLE: u32 = 1 << 1;
 
     unsafe {
         let core0_timer_irqcntl = CORE0_TIMER_IRQCNTL as *mut u32;
@@ -286,6 +299,23 @@ mod imp {
             pic_outb(0xA1, 0x02); 
             pic_outb(0x21, 0x01); 
             pic_outb(0xA1, 0x01); 
+            // OCW1 (interrupt mask register): 0 = unmasked. Bit0 = IRQ0
+            // (PIT, timer_handler_stub -> schedule()/run_schedule()),
+            // bit4 = IRQ4 (COM1 UART). Everything else stays masked --
+            // no handler exists for those lines. 0xEE = 1110_1110:
+            // unmasks bit0 and bit4, masks the rest.
+            //
+            // This used to be 0xEF (1110_1111), which unmasks *only*
+            // bit4. IRQ0 stayed masked, so the PIT hardware was ticking
+            // (init_pit() ran fine) but the interrupt itself never
+            // reached the CPU -- timer_handler_stub, and therefore
+            // schedule()/run_schedule(), never ran a single time. UART
+            // input still worked (it's on the one bit that *was*
+            // unmasked, and uart_handler_stub doesn't call schedule()
+            // at all), which is why the shell looked fully responsive
+            // while every task-switch-dependent thing -- background_worker_2's
+            // "[Worker 2: Tick]" print, and any spawned ring-3 process
+            // ever actually being dispatched -- silently never happened.
             pic_outb(0x21, 0xEE);
             pic_outb(0xA1, 0xFF); 
         }
