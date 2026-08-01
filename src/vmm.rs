@@ -410,3 +410,62 @@ pub mod arch {
     }
 
 }
+
+
+/// Attempts to resolve a memory fault via Demand Paging.
+/// Returns `true` if a page was mapped and the instruction should be retried.
+/// Returns `false` if it is a fatal violation (e.g., segmentation fault).
+pub fn handle_page_fault(fault_addr: usize, is_present: bool, is_user: bool) -> bool {
+    // If the page is already present, this is a protection/permissions violation
+    // (like writing to a read-only page or Ring 3 accessing Ring 0 memory).
+    // Since we do not have Copy-on-Write (CoW) yet, this is an instant SegFault.
+    if is_present {
+        return false;
+    }
+
+    // Align the faulting virtual address down to the nearest 4KB page boundary
+    let aligned_virt = fault_addr & !0xFFF;
+
+    // 1. Get the current active page table root directly from hardware
+    #[cfg(target_arch = "x86_64")]
+    let root = {
+        let cr3: usize;
+        unsafe { core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nostack, nomem)); }
+        (cr3 & 0x000F_FFFF_FFFF_F000) as *mut arch::PageTable
+    };
+
+    #[cfg(target_arch = "aarch64")]
+    let root = {
+        let ttbr: usize;
+        // AArch64 splits address spaces: TTBR0 for user, TTBR1 for kernel
+        if fault_addr < 0xFFFF_0000_0000_0000 {
+            unsafe { core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr, options(nostack, nomem)); }
+        } else {
+            unsafe { core::arch::asm!("mrs {}, ttbr1_el1", out(reg) ttbr, options(nostack, nomem)); }
+        }
+        (ttbr & 0x0000_FFFF_FFFF_F000) as *mut arch::PageTable
+    };
+
+    // 2. Allocate a fresh physical frame
+    let frame = match crate::memory::vmm_alloc_frame() {
+        Some(f) => f,
+        None => return false, // OOM: System is completely out of physical memory
+    };
+
+    // 3. Zero out the memory to prevent leaking old data to new processes
+    unsafe {
+        core::ptr::write_bytes(frame as *mut u8, 0, 4096);
+    }
+
+    // 4. Map it in dynamically
+    let flags = crate::memory::MapFlags {
+        writable: true, // Default to writable for new demand-paged memory
+        user_accessible: is_user,
+        execute_disable: false,
+        device: false,
+    };
+
+    unsafe {
+        arch::map_page(root, aligned_virt, frame, flags).is_ok()
+    }
+}
