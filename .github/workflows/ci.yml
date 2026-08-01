@@ -98,11 +98,11 @@ jobs:
           # Stage A: Wait for the kernel to finish booting
           expect {
               "mitosOS: kernel_main reached. Boot OK." { 
-                  puts "\n[CI] Boot confirmed! Waiting 2 seconds for shell..."
+                  puts "\n> CI: Boot confirmed! Waiting 2 seconds for shell..."
                   sleep 2
               }
               timeout {
-                  puts "\n[CI] Error: Timed out waiting for kernel to boot."
+                  puts "\n> CI: Error: Timed out waiting for kernel to boot."
                   exit 1
               }
           }
@@ -114,12 +114,12 @@ jobs:
           # Stage C: Wait for the process to run and trigger the expected fault
           expect {
               "$env(CRASH_MSG)" { 
-                  puts "\n[CI] Expected fault detected! Test passed."
+                  puts "\n> CI: Expected fault detected! Test passed."
                   sleep 1
                   exit 0 
               }
               timeout {
-                  puts "\n[CI] Error: Timed out waiting for ring-3 fault."
+                  puts "\n> CI: Error: Timed out waiting for ring-3 fault."
                   exit 1
               }
           }
@@ -134,7 +134,7 @@ jobs:
           # 5. Run Expect and capture the output
           expect run_test.exp 2>&1 | tee qemu_output.log
 
-          # 6. Final strict assertions (re-verifying via grep to match your original check)
+          # 6. Final strict assertions
           echo "----- captured serial output -----"
           cat qemu_output.log
           
