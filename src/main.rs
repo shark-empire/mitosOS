@@ -80,6 +80,13 @@ unsafe extern "C" {
 #[unsafe(no_mangle)]
 pub extern "C" fn kmain() -> ! {
     let mut uart = unsafe { uart::Uart::init() };
+    // Checkpoint 0: kmain was reached at all, and the UART's own
+    // register pokes (GPIO ALT function, baud divisor, FIFO enable)
+    // didn't leave it unable to transmit. If this line is missing
+    // from serial output, the hang is at or before this point --
+    // most likely still in _start/el2_to_el1/el1_entry in boot.s,
+    // before Rust code runs at all.
+    let _ = writeln!(uart, "[boot] 0: kmain reached, uart live");
 
     unsafe {
         // 1. Load the kernel's own GDT/TSS (ring-3 segments + the stack
@@ -91,6 +98,10 @@ pub extern "C" fn kmain() -> ! {
 
         // 2. Install IDT/Vector table so the CPU can handle exceptions & IRQs.
         interrupts::init();
+        // Checkpoint 1: VBAR_EL1 is set, the QA7 timer IRQ is routed,
+        // and the physical timer is armed (still masked at the CPU
+        // level -- DAIF isn't cleared until step 4 below).
+        let _ = writeln!(uart, "[boot] 1: interrupts::init() returned");
 
         // 3. Initialize the heap allocator subsystem.
         // (Ensures .bss doesn't collide with 0x150_000 as kernel grows).
@@ -103,6 +114,11 @@ pub extern "C" fn kmain() -> ! {
         // those were freely handing out frames from the "reserved" range,
         // including frame 0 itself.
         protect_boot_memory(&raw const _kernel_end as usize, HEAP_START, HEAP_SIZE);
+        // Checkpoint 2: heap allocator + physical frame bitmap are both
+        // initialized. mmu::init() below is the next thing to call
+        // vmm_alloc_frame() (for the root page table), so this is the
+        // last checkpoint before the identity map gets built.
+        let _ = writeln!(uart, "[boot] 2: memory subsystem + protect_boot_memory done");
 
         // 3c. Bring the MMU up (AArch64 only -- x86_64 has had paging on
         // since the bootloader's real->protected->long mode transition,
@@ -111,6 +127,13 @@ pub extern "C" fn kmain() -> ! {
         // result depends on this having already run -- see mmu.rs.
         #[cfg(target_arch = "aarch64")]
         mmu::init(&mut uart);
+        // Checkpoint 3: mmu::init() actually returned control to kmain
+        // (on top of its own three internal prints -- "bring-up
+        // starting", "identity map built", "MMU enabled" -- this
+        // confirms the *return* path itself, i.e. the stack, wasn't
+        // corrupted by whatever mmu::init() just did).
+        #[cfg(target_arch = "aarch64")]
+        let _ = writeln!(uart, "[boot] 3: mmu::init() returned");
 
         // 3. Unmask the UART's interrupt line.
         uart.enable_interrupts();
