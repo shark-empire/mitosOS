@@ -97,6 +97,18 @@ mod imp {
 
         // ESR_EL1[31:26] = Exception Class (EC): what kind of trap this was.
         let ec = (esr >> 26) & 0x3F;
+
+
+         if ec == 0x20 || ec == 0x21 || ec == 0x24 || ec == 0x25 {
+        let is_user = ec == 0x20 || ec == 0x24;
+        let fsc = esr & 0x3F;
+        let is_present = (fsc & 0b111100) == 0b001100;
+
+        if crate::vmm::handle_page_fault(far as usize, is_present, is_user) {
+            return;
+        }
+    }
+        
         let name = match ec {
             // A register that's simply undefined at the current EL (e.g.
             // EL0 executing `mrs x0, sctlr_el1`, as userspace/
@@ -406,54 +418,43 @@ mod imp {
     /// one (8, 13, 14, ...), or 0 for vectors that don't (0, 6) -- the
     /// calling stub pushes a dummy 0 so the stack layout -- and therefore
     /// this function's view of it -- is uniform either way.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fault_common_handler(vector: u64, error_code: u64, rip: u64) -> ! {
-        let name = match vector {
-            0 => "Divide Error (#DE)",
-            6 => "Invalid Opcode (#UD)",
-            8 => "Double Fault (#DF)",
-            13 => "General Protection Fault (#GP)",
-            14 => "Page Fault (#PF)",
-            _ => "Unhandled Exception",
-        };
+#[unsafe(no_mangle)]
+pub extern "C" fn fault_common_handler(vector: u64, error_code: u64, rip: u64) {
+    let name = match vector {
+        0 => "Divide Error (#DE)",
+        6 => "Invalid Opcode (#UD)",
+        8 => "Double Fault (#DF)",
+        13 => "General Protection Fault (#GP)",
+        14 => "Page Fault (#PF)",
+        _ => "Unhandled Exception",
+    };
 
+    if vector == 14 {
+        let cr2: usize;
+        unsafe {
+            core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack));
+        }
+        let present = error_code & 1 != 0;
+        let user = error_code & (1 << 2) != 0;
+        
+        if crate::vmm::handle_page_fault(cr2, present, user) {
+            return;
+        }
+
+        let write = error_code & (1 << 1) != 0;
         let mut uart = crate::uart::Uart::shared();
-        let _ = writeln!(uart, "\r\n!!! CPU EXCEPTION: {name} (vector {vector}) !!!");
-        let _ = writeln!(uart, "    error_code   = 0x{error_code:x}");
-        let _ = writeln!(uart, "    faulting rip = 0x{rip:x}");
-
-        if vector == 14 {
-            // CR2 holds the faulting virtual address for a page fault --
-            // it's a separate control register, untouched by the stub's
-            // GPR pushes, so it's still valid to read here.
-            let cr2: usize;
-            unsafe {
-                core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack));
-            }
-            let present = error_code & 1 != 0;
-            let write = error_code & (1 << 1) != 0;
-            let user = error_code & (1 << 2) != 0;
-            let _ = writeln!(
-                uart,
-                "    fault address (CR2) = 0x{cr2:x}  [{}, {}, {}]",
-                if present { "protection violation" } else { "page not present" },
-                if write { "write" } else { "read" },
-                if user { "user-mode" } else { "supervisor" },
-            );
-        }
-
-        if vector == 13 {
-            let _ = writeln!(
-                uart,
-                "    selector index = {}  [external={}, table={}]",
-                error_code >> 3,
-                error_code & 1 != 0,
-                if error_code & (1 << 1) != 0 { "IDT" } else { "GDT/LDT" },
-            );
-        }
-
-        panic!("Unhandled CPU exception: {name}");
+        let _ = core::fmt::write(&mut uart, format_args!(
+            "\r\n!!! CPU EXCEPTION: {} (vector {}) !!!\r\n    fault address (CR2) = 0x{:x} [{}, {}, {}]\r\n",
+            name, vector, cr2,
+            if present { "protection violation" } else { "page not present" },
+            if write { "write" } else { "read" },
+            if user { "user-mode" } else { "supervisor" },
+        ));
     }
+
+    panic!("Unhandled CPU exception: {name} at RIP: 0x{rip:x}");
+}
+
 }
 
 
@@ -519,26 +520,33 @@ core::arch::global_asm!(
     // so EXC_NOERR pushes a dummy 0 first -- that keeps [rsp+72]/[rsp+80]
     // (error_code/rip) at the same offsets either way, after the 9 GPR
     // pushes below.
-    .macro EXC_NOERR name, vector
-    .global \name
-    \name:
-        push 0
-        push rax; push rcx; push rdx; push rsi; push rdi; push r8; push r9; push r10; push r11
-        mov rdi, \vector
-        mov rsi, [rsp + 72]
-        mov rdx, [rsp + 80]
-        call fault_common_handler
-    .endm
+ .macro EXC_NOERR name, vector
+.global \name
+\name:
+    push 0
+    push rax; push rcx; push rdx; push rsi; push rdi; push r8; push r9; push r10; push r11
+    mov rdi, \vector
+    mov rsi, [rsp + 72]
+    mov rdx, [rsp + 80]
+    call fault_common_handler
+    pop r11; pop r10; pop r9; pop r8; pop rdi; pop rsi; pop rdx; pop rcx; pop rax
+    add rsp, 8
+    iretq
+.endm
 
-    .macro EXC_ERR name, vector
-    .global \name
-    \name:
-        push rax; push rcx; push rdx; push rsi; push rdi; push r8; push r9; push r10; push r11
-        mov rdi, \vector
-        mov rsi, [rsp + 72]
-        mov rdx, [rsp + 80]
-        call fault_common_handler
-    .endm
+.macro EXC_ERR name, vector
+.global \name
+\name:
+    push rax; push rcx; push rdx; push rsi; push rdi; push r8; push r9; push r10; push r11
+    mov rdi, \vector
+    mov rsi, [rsp + 72]
+    mov rdx, [rsp + 80]
+    call fault_common_handler
+    pop r11; pop r10; pop r9; pop r8; pop rdi; pop rsi; pop rdx; pop rcx; pop rax
+    add rsp, 8
+    iretq
+.endm
+
 
     EXC_NOERR divide_error_stub, 0
     EXC_NOERR invalid_opcode_stub, 6
@@ -713,12 +721,13 @@ core::arch::global_asm!(
       mov sp, x0
       b   el1_sync_restore
 
-      el1_sync_fault:
-      mrs x0, esr_el1
-      mrs x1, far_el1
-      mrs x2, elr_el1
-      bl handle_el1_sync_exception
-      // handle_el1_sync_exception -> ! -- never returns here.
+    el1_sync_fault:
+    mrs x0, esr_el1
+    mrs x1, far_el1
+    mrs x2, elr_el1
+    bl handle_el1_sync_exception
+    b el1_sync_restore
+
 
       el1_sync_restore:
       ldp x0, x1, [sp, #248]
