@@ -13,7 +13,7 @@ jobs:
           - target: aarch64-unknown-none
             qemu_bin: qemu-system-aarch64
             # Change '-serial stdio' to '-serial null -serial stdio'
-            qemu_flags: -M raspi3b -display none -serial null -serial stdio
+            qemu_flags: -M raspi3b -display none -serial stdio
             bin_name: kernel8.img
 
           - target: x86_64-unknown-none
