@@ -131,7 +131,22 @@ pub mod arch {
         }
 
         pub fn set_frame(&mut self, phys: usize, flags: MapFlags, is_table: bool) {
-            let mut raw = (phys & 0x0000_FFFF_FFFF_F000) | (if is_table { 3 } else { 1 });
+            // Bits[1:0] = 0b11 in *both* branches despite the name --
+            // architecturally that's a Table descriptor at L0-L2 and a
+            // Page descriptor at L3, and those two happen to share the
+            // identical encoding; only which level's walk produced the
+            // entry tells the hardware which one it is. This 4-level
+            // walk (map_page below always descends all the way to L3)
+            // never emits the *other* legal encoding, 0b01 -- a Block
+            // descriptor, valid only at L1/L2 -- so that value was
+            // never correct here. At L3 specifically, 0b01 isn't a
+            // Block descriptor either; it's just an invalid entry, so
+            // every leaf this used to produce faulted the instant the
+            // MMU was switched on in mmu.rs -- before that fault could
+            // even reach the exception handler, since the stack and
+            // the UART MMIO it needs to report on were themselves
+            // behind the same broken encoding.
+            let mut raw = (phys & 0x0000_FFFF_FFFF_F000) | 0b11;
             raw |= 1 << 10; // Access Flag
             if !flags.writable {
                 raw |= 1 << 7;
