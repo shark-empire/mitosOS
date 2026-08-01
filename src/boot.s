@@ -3,6 +3,30 @@
 .global _start
 
 _start:
+    // QEMU's raspi3b (mirroring real BCM2837 firmware) releases *all
+    // four* cores at this exact same address when loaded via
+    // `-kernel` -- there's no armstub8.s spin-table stub in front of
+    // it to hold cores 1-3 back the way real GPU firmware normally
+    // would. This kernel has no SMP support anywhere downstream (one
+    // shared 64KB boot stack, a single-core scheduler in task.rs), so
+    // without this check all 4 cores fall through to `bl kmain`
+    // together and start stomping on each other's stack frames within
+    // the first few calls. That's indistinguishable from a silent
+    // hang -- corrupted return addresses send execution into
+    // undefined memory before any core gets as far as the first UART
+    // write, so kernel_main's "Boot OK" print (and even mmu.rs's own
+    // earlier "MMU bring-up starting..." print) never happens.
+    // Aff0 (mpidr_el1 bits 1:0) is the core number on this single-
+    // cluster SoC -- 0-3, no Aff1+ decoding needed.
+    mrs x0, mpidr_el1
+    and x0, x0, #3
+    cbz x0, primary_core
+
+park_secondary:
+    wfe
+    b   park_secondary
+
+primary_core:
     // Real Pi 3 firmware (and QEMU's raspi3b, which mirrors it) hands
     // a 64-bit kernel off at EL2, not EL1 -- occasionally EL3,
     // depending on the boot path. Everything downstream of this file
