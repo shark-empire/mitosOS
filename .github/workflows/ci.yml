@@ -75,7 +75,7 @@ jobs:
           if [ "${{ matrix.target }}" = "aarch64-unknown-none" ]; then
             BOOT_ARGS="-kernel kernel8.img"
             TIMEOUT_SEC=180
-            CRASH_MSG="Trapped MSR/MRS/System instruction"
+            CRASH_MSG="Unhandled AArch64 exception: Unhandled synchronous exception"
           else
             BOOT_ARGS="-drive format=raw,file=disk.img,if=ide -device ahci,id=ahci0"
             TIMEOUT_SEC=45
@@ -140,7 +140,7 @@ jobs:
           grep -q "mitosOS: kernel_main reached. Boot OK." qemu_output.log
           grep -q "Spawned as a new isolated (ring-3) process" qemu_output.log
           if [ "${{ matrix.target }}" = "aarch64-unknown-none" ]; then
-            grep -q "Trapped MSR/MRS/System instruction" qemu_output.log
+            grep -q "Unhandled AArch64 exception: Unhandled synchronous exception" qemu_output.log
           else
             grep -q "General Protection Fault" qemu_output.log
           fi
