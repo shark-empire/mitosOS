@@ -100,6 +100,11 @@ el1_entry:
     ldr x0, =stack_top
     mov sp, x0
 
+    mrs x0, cpacr_el1
+    orr x0, x0, #(3 << 20)
+    msr cpacr_el1, x0
+    isb
+
     // Zero .bss -- this stack, the heap allocator's internal state,
     // and the physical frame bitmap all live in here as
     // zero-initialized statics. QEMU happens to zero-fill guest RAM
