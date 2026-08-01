@@ -100,6 +100,24 @@ el1_entry:
     ldr x0, =stack_top
     mov sp, x0
 
+    // Zero .bss -- this stack, the heap allocator's internal state,
+    // and the physical frame bitmap all live in here as
+    // zero-initialized statics. QEMU happens to zero-fill guest RAM
+    // by default, which is the only reason skipping this has ever
+    // gotten away with working; real hardware and other loaders make
+    // no such promise. __bss_start/__bss_end come from linker_rpi.ld
+    // and are both 8-byte aligned (the section itself is ALIGN(16),
+    // and the end is explicitly `. = ALIGN(8)`), so a plain
+    // store-and-advance-by-8 loop covers the whole range exactly.
+    ldr x0, =__bss_start
+    ldr x1, =__bss_end
+bss_zero_loop:
+    cmp x0, x1
+    b.ge bss_zero_done
+    str xzr, [x0], #8
+    b   bss_zero_loop
+bss_zero_done:
+
     bl kmain
 
     // If it ever returns, loop forever
