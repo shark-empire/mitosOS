@@ -156,23 +156,30 @@ mod imp {
     /// fault recovery yet (same limitation as EL1), so this is fatal
     /// to the whole kernel, matching x86_64's current sophistication
     /// (a #GP from ring 3 is equally fatal there today).
-    #[unsafe(no_mangle)]
-    pub extern "C" fn handle_el0_sync_trap(
-        esr: u64,
-        far: u64,
-        elr: u64,
-        sysno: u64,
-        a0: u64,
-        a1: u64,
-        a2: u64,
-    ) -> u64 {
-        let ec = (esr >> 26) & 0x3F;
-        if ec == 0x15 {
-            crate::syscall::syscall_handler(sysno as usize, a0 as usize, a1 as usize, a2 as usize) as u64
-        } else {
-            handle_el1_sync_exception(esr, far, elr)
-        }
+#[unsafe(no_mangle)]
+pub extern "C" fn handle_el0_sync_trap(
+    esr: u64,
+    far: u64,
+    elr: u64,
+    sysno: u64,
+    a0: u64,
+    a1: u64,
+    a2: u64,
+) -> u64 {
+    let ec = (esr >> 26) & 0x3F;
+
+    if ec == 0x15 {
+        crate::syscall::syscall_handler(
+            sysno as usize,
+            a0 as usize,
+            a1 as usize,
+            a2 as usize,
+        ) as u64
+    } else {
+        handle_el1_sync_exception(esr, far, elr);
+        0
     }
+}
 }
 
 #[cfg(target_arch = "aarch64")]
