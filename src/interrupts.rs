@@ -98,6 +98,16 @@ mod imp {
         // ESR_EL1[31:26] = Exception Class (EC): what kind of trap this was.
         let ec = (esr >> 26) & 0x3F;
         let name = match ec {
+            // A register that's simply undefined at the current EL (e.g.
+            // EL0 executing `mrs x0, sctlr_el1`, as userspace/
+            // test_program_aarch64.s does) decodes as EC 0x00, not 0x18.
+            // EC 0x18 is reserved for a narrower case: a register access
+            // that *would* be valid here but is being intercepted by an
+            // explicit higher-EL trap-enable bit (HCR_EL2/CPTR_EL2/etc,
+            // e.g. EL2 auditing an EL1 access) -- not the general
+            // "lower EL touched a higher-EL-only register" case, which
+            // the architecture simply treats as an undefined instruction.
+            0x00 => "Illegal Instruction (undefined at current Exception Level)",
             0x0E => "Illegal Execution State",
             0x15 => "SVC instruction (unexpected at EL1)",
             0x18 => "Trapped MSR/MRS/System instruction",
@@ -482,12 +492,21 @@ core::arch::global_asm!(
 
     syscall_handler_stub:
       push rax; push rcx; push rdx; push rsi; push rdi; push r8; push r9; push r10; push r11
-      // Pass registers: rax (syscall num) -> rdi, rbx -> rsi, rcx -> rdx, rdx -> rcx
+      // Pass registers: rax (syscall num) -> rdi, rbx (arg1) -> rsi, rcx (arg2) -> rdx, r8 (arg3) -> rcx
       mov rdi, rax
       mov rsi, rbx
       mov rdx, rcx
       mov rcx, r8
       call syscall_handler
+      // syscall_handler's return value comes back in rax, but the
+      // original (pre-call) rax is still sitting in the saved slot at
+      // [rsp+64] (9 pushes above -- 8 registers on top of it, 8 bytes
+      // each). Without this store, the plain `pop rax` below reloads
+      // that stale saved value and silently discards the real return
+      // value -- every syscall on x86_64 would appear to fail/echo its
+      // own number back to the caller, e.g. cmd_uname's `res == 0`
+      // check would never see the real (successful) 0 sys_uname returns.
+      mov [rsp + 64], rax
       pop r11; pop r10; pop r9; pop r8; pop rdi; pop rsi; pop rdx; pop rcx; pop rax
       iretq
 
