@@ -30,7 +30,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y qemu-system-arm qemu-system-x86 gcc-aarch64-linux-gnu nasm
+          sudo apt-get install -y qemu-system-arm qemu-system-x86 gcc-aarch64-linux-gnu nasm expect
 
       - name: Setup Rust Nightly Toolchain
         uses: dtolnay/rust-toolchain@nightly
@@ -71,66 +71,74 @@ jobs:
       - name: Boot in QEMU and check serial output
         run: |
           set -o pipefail
+          
+          # 1. Define architecture-specific variables
           if [ "${{ matrix.target }}" = "aarch64-unknown-none" ]; then
             BOOT_ARGS="-kernel kernel8.img"
+            TIMEOUT_SEC=180
+            CRASH_MSG="Trapped MSR/MRS/System instruction"
           else
-            # 1. Mounts disk.img on IDE for the bootloader
-            # 2. Injects an empty AHCI controller for the PCI scanner to find
             BOOT_ARGS="-drive format=raw,file=disk.img,if=ide -device ahci,id=ahci0"
+            TIMEOUT_SEC=45
+            CRASH_MSG="General Protection Fault"
           fi
 
-          # Exercises the shell -> VFS -> ELF loader -> ring-3/EL0 spawn
-          # path end to end on both architectures now, not just the boot
-          # sequence. test_program(_aarch64).s executes one instruction
-          # that's illegal at ring-3/EL0 -- hlt on x86_64 (ring-0-only),
-          # an EL1-only `mrs` on aarch64 (inaccessible from EL0 in either
-          # direction) -- so hitting the resulting fault is the actual
-          # proof the process ran unprivileged, not a failure.
+          # 2. Combine the full QEMU command and target command
+          QEMU_CMD="${{ matrix.qemu_bin }} ${{ matrix.qemu_flags }} $BOOT_ARGS"
           INPUT_CMD="run /bin/test_program"
 
-          # AArch64 needs more wall-clock time before the shell prompt
-          # than x86_64 does now: mmu.rs builds a 32MiB identity map
-          # page-by-page at boot (thousands of individual 4-level walks
-          # plus barrier instructions), which x86_64 never has to do --
-          # its bootloader already hands kmain a working, MMU-enabled
-          # CR3. Under QEMU's software emulation that shows up as real
-          # wall-clock delay, not just instruction count. A 6s head
-          # start (tuned back when AArch64 booted almost instantly) was
-          # landing the typed command before the shell was actually
-          # reading -- no crash, just an unrun command and two failed
-          # greps. If this ever needs to grow further, mmu.rs's own
-          # boot-time prints (grep qemu_output.log for "MMU enabled")
-          # pinpoint how much of the delay is the identity map specifically.
-          if [ "${{ matrix.target }}" = "aarch64-unknown-none" ]; then
-            PRE_SLEEP=15
-            POST_SLEEP=10
-            TIMEOUT=45s
-          else
-            # Bumped x86_64 timings to account for AHCI/ATA initialization delays
-            PRE_SLEEP=15
-            POST_SLEEP=10
-            TIMEOUT=45s
-          fi
+          # 3. Create the Expect script dynamically
+          cat << 'EOF' > run_test.exp
+          # Set the overall timeout for the script
+          set timeout $env(TIMEOUT_SEC)
+          
+          # Start QEMU through a shell to safely handle spaces in arguments
+          spawn sh -c "$env(QEMU_CMD)"
+          
+          # Stage A: Wait for the kernel to finish booting
+          expect {
+              "mitosOS: kernel_main reached. Boot OK." { 
+                  puts "\n[CI] Boot confirmed! Waiting 2 seconds for shell..."
+                  sleep 2
+              }
+              timeout {
+                  puts "\n[CI] Error: Timed out waiting for kernel to boot."
+                  exit 1
+              }
+          }
+          
+          # Stage B: Type the command slowly to prevent UART FIFO drops
+          set send_slow {1 .05}
+          send -s "$env(INPUT_CMD)\r"
+          
+          # Stage C: Wait for the process to run and trigger the expected fault
+          expect {
+              "$env(CRASH_MSG)" { 
+                  puts "\n[CI] Expected fault detected! Test passed."
+                  sleep 1
+                  exit 0 
+              }
+              timeout {
+                  puts "\n[CI] Error: Timed out waiting for ring-3 fault."
+                  exit 1
+              }
+          }
+          EOF
 
-          # -serial stdio maps the guest UART straight to QEMU's own stdin/stdout.
-          # We use a pure bash loop to slowly type the command. This prevents 
-          # characters from dropping if the payload exceeds the 16-byte COM1 UART FIFO.
-          (
-            sleep "$PRE_SLEEP"
-            for (( i=0; i<${#INPUT_CMD}; i++ )); do
-              printf "%s" "${INPUT_CMD:$i:1}"
-              sleep 0.05
-            done
-            printf "\n"
-            sleep "$POST_SLEEP"
-          ) | timeout "$TIMEOUT" ${{ matrix.qemu_bin }} ${{ matrix.qemu_flags }} $BOOT_ARGS 2>&1 | tee qemu_output.log || true
+          # 4. Export variables so Expect can read them
+          export QEMU_CMD
+          export TIMEOUT_SEC
+          export INPUT_CMD
+          export CRASH_MSG
 
+          # 5. Run Expect and capture the output
+          expect run_test.exp 2>&1 | tee qemu_output.log
 
+          # 6. Final strict assertions (re-verifying via grep to match your original check)
           echo "----- captured serial output -----"
           cat qemu_output.log
+          
           grep -q "mitosOS: kernel_main reached. Boot OK." qemu_output.log
-
-          echo "----- checking ring-3/EL0 process spawn -----"
           grep -q "Spawned as a new isolated (ring-3) process" qemu_output.log
           if [ "${{ matrix.target }}" = "aarch64-unknown-none" ]; then
             grep -q "Trapped MSR/MRS/System instruction" qemu_output.log
