@@ -520,7 +520,7 @@ core::arch::global_asm!(
     // so EXC_NOERR pushes a dummy 0 first -- that keeps [rsp+72]/[rsp+80]
     // (error_code/rip) at the same offsets either way, after the 9 GPR
     // pushes below.
- .macro EXC_NOERR name, vector
+.macro EXC_NOERR name, vector
 .global \name
 \name:
     push 0
@@ -546,6 +546,7 @@ core::arch::global_asm!(
     add rsp, 8
     iretq
 .endm
+
 
 
     EXC_NOERR divide_error_stub, 0
