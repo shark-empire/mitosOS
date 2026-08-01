@@ -92,7 +92,7 @@ mod imp {
     /// exists), so this just reports what happened instead of the
     /// previous behavior of silently hanging (`b .`) with no diagnostics.
     #[unsafe(no_mangle)]
-    pub extern "C" fn handle_el1_sync_exception(esr: u64, far: u64, elr: u64) -> ! {
+    pub extern "C" fn handle_el1_sync_exception(esr: u64, far: u64, elr: u64){
         use core::fmt::Write;
 
         // ESR_EL1[31:26] = Exception Class (EC): what kind of trap this was.
