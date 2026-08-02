@@ -35,9 +35,35 @@ pub extern "C" fn syscall_handler(
 // System Call Handlers
 // =========================================================================
 
+/// Returns true if it's safe for the kernel to read (`need_write =
+/// false`) or write into (`need_write = true`) `len` bytes starting at
+/// `ptr`, on behalf of whichever task is currently making this
+/// syscall.
+///
+/// A SharedThread (kernel-mode) caller -- e.g. shell.rs's `cmd_uname`,
+/// which invokes this same `int 0x80`/`svc #0` path directly from
+/// ring 0 -- passes its own plain kernel-address stack locals; those
+/// were never "user" pages to begin with, so it's trusted
+/// unconditionally, same as before. Only a genuine ring-3
+/// `IsolatedProcess` caller gets its pointer walked against its own
+/// page table: without this, any userspace program could pass a
+/// kernel address to write()/read() and use the kernel's own,
+/// previously-unchecked `core::slice::from_raw_parts` as an arbitrary
+/// kernel-memory read/write primitive.
+fn validate_user_ptr(ptr: usize, len: usize, need_write: bool) -> bool {
+    let (root, is_ring3) = crate::task::current_task_access_info();
+    if !is_ring3 {
+        return true;
+    }
+    crate::vmm::validate_user_range(root, ptr, len, need_write)
+}
+
 /// Writes data from a buffer to standard output (1) or standard error (2).
 fn sys_write(fd: usize, ptr: *const u8, len: usize) -> usize {
     if (fd != 1 && fd != 2) || ptr.is_null() || len == 0 {
+        return usize::MAX;
+    }
+    if !validate_user_ptr(ptr as usize, len, false) {
         return usize::MAX;
     }
 
@@ -55,6 +81,9 @@ fn sys_write(fd: usize, ptr: *const u8, len: usize) -> usize {
 /// Reads input from standard input (0) into a target buffer.
 fn sys_read(fd: usize, ptr: *mut u8, len: usize) -> usize {
     if fd != 0 || ptr.is_null() || len == 0 {
+        return usize::MAX;
+    }
+    if !validate_user_ptr(ptr as usize, len, true) {
         return usize::MAX;
     }
 
@@ -76,6 +105,9 @@ fn sys_read(fd: usize, ptr: *mut u8, len: usize) -> usize {
 /// Populates system information metadata into the provided `UtsName` buffer pointer.
 fn sys_uname(ptr: *mut UtsName) -> usize {
     if ptr.is_null() {
+        return usize::MAX;
+    }
+    if !validate_user_ptr(ptr as usize, core::mem::size_of::<UtsName>(), true) {
         return usize::MAX;
     }
 
