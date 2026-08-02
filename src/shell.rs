@@ -81,7 +81,7 @@ fn run_command(uart: &mut Uart, line: &str, history: &[String], ramdisk: &Option
         "help" => {
             let _ = writeln!(
                 uart,
-                "commands: help, about, uname, ps, echo <text>, history, memstat, panic, ls, cat <file>, stat <file>, raw <file>, rxtest, diskread <lba> [count], run <file>"
+                "commands: help, about, uname, translate <hex vaddr>, ps, echo <text>, history, memstat, panic, ls, cat <file>, stat <file>, raw <file>, rxtest, diskread <lba> [count], run <file>"
             );
         }
         "about" => {
@@ -100,6 +100,36 @@ fn run_command(uart: &mut Uart, line: &str, history: &[String], ramdisk: &Option
         }
         "uname" => {
             cmd_uname(uart);
+        }
+        "translate" => {
+            if args.len() < 2 {
+                let _ = writeln!(uart, "Usage: translate <hex vaddr>");
+                return;
+            }
+            let hex = args[1].strip_prefix("0x").unwrap_or(args[1]);
+            let vaddr = match usize::from_str_radix(hex, 16) {
+                Ok(n) => n,
+                Err(_) => {
+                    let _ = writeln!(uart, "Invalid address: '{}'", args[1]);
+                    return;
+                }
+            };
+            let (root, _is_ring3) = crate::task::current_task_access_info();
+            if root == 0 {
+                let _ = writeln!(uart, "No active task page table yet.");
+                return;
+            }
+            let result = unsafe {
+                crate::vmm::arch::translate_addr(root as *const crate::vmm::arch::PageTable, vaddr)
+            };
+            match result {
+                Some(phys) => {
+                    let _ = writeln!(uart, "{:#x} -> {:#x}", vaddr, phys);
+                }
+                None => {
+                    let _ = writeln!(uart, "{:#x} is not mapped in the current task's page table", vaddr);
+                }
+            }
         }
         "ps" => {
             let tasks = crate::task::get_task_list();
