@@ -20,6 +20,7 @@ mod drivers;
 pub mod task;
 mod uart;
 pub mod sync;
+pub mod process;
 pub mod syscall;
 pub mod version;
 pub mod addr;
@@ -162,6 +163,13 @@ for dev in scan_pci_devices {
 }
 let _ = writeln!(uart, "-------------------------");
     }
+
+    // Initialize hardware system call MSRs
+crate::syscall::init_syscall_hardware();
+
+// Example: Load an embedded ELF binary from your ramdisk or memory slice
+ crate::process::spawn_and_run_elf(EMBEDDED_USER_ELF)?;
+
 
 
 // Test frame allocation during initialization
