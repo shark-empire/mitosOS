@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "libmitos",
+    "test_app"
+]
+resolver = "2"
