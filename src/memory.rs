@@ -202,6 +202,16 @@ impl<const N: usize> BitmapAllocator<N> {
         if array_idx < N { self.bitmap[array_idx] |= 1 << bit_idx; }
     }
 
+    /// Returns a frame to the pool. Mirrors `reserve_frame`'s bounds
+    /// check; out-of-range indices are silently ignored rather than
+    /// panicking, since a bad address here would otherwise take the
+    /// whole kernel down over a bookkeeping bug in a caller.
+    pub fn free_frame(&mut self, frame_index: usize) {
+        let array_idx = frame_index / 64;
+        let bit_idx = frame_index % 64;
+        if array_idx < N { self.bitmap[array_idx] &= !(1 << bit_idx); }
+    }
+
     pub fn reserve_range(&mut self, start_frame: usize, count: usize) {
         for i in 0..count { self.reserve_frame(start_frame + i); }
     }
@@ -249,6 +259,15 @@ pub const USER_SPACE_BASE: usize = 1 << 39;
 
 pub fn vmm_alloc_frame() -> Option<usize> {
     PHYSICAL_PMM.lock().allocate_next_frame().map(|idx| idx * PAGE_SIZE)
+}
+
+/// Returns a physical frame to the allocator. `addr` must be
+/// page-aligned and must not still be referenced by any live page
+/// table entry -- callers are responsible for unmapping/no longer
+/// translating through it first (see `vmm::free_process_page_table`,
+/// the only current caller).
+pub fn vmm_free_frame(addr: usize) {
+    PHYSICAL_PMM.lock().free_frame(addr / PAGE_SIZE);
 }
 
 /// Convenience alias expected by the ELF loader (`crate::memory::alloc_frame`).
