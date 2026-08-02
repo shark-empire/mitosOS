@@ -24,6 +24,7 @@ pub mod process;
 pub mod syscall;
 pub mod version;
 pub mod addr;
+pub mod hal;
 #[cfg(target_arch = "x86_64")]
 pub mod pci;
 #[cfg(target_arch = "x86_64")]
