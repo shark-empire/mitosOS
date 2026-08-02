@@ -91,6 +91,25 @@ pub struct Task {
     pub sp: usize,
     /// Hardware Page Table Root (CR3 on x86_64, TTBR0_EL1 on AArch64).
     pub memory_root: usize, 
+    /// True only when this task exclusively owns `memory_root` (a
+    /// fresh frame from `memory::create_process_page_table`) and is
+    /// therefore the one responsible for freeing it on exit. False for
+    /// a `SharedThread` (whose root is the caller's live table --
+    /// possibly the kernel's own boot root) and for an
+    /// `IsolatedProcess` that fell back to sharing its parent's table
+    /// after a page-table allocation failure (see
+    /// `allocate_isolated_page_table`) -- neither actually owns that
+    /// table, so freeing it on exit would corrupt memory something
+    /// else is still using. Set once in `init`, consumed once by
+    /// `run_schedule`'s exit-time cleanup.
+    pub owns_memory_root: bool,
+    /// True if this task runs in ring 3 / EL0. Lets the syscall layer
+    /// (`syscall::validate_user_ptr`) tell a genuine userspace caller,
+    /// whose pointers must be checked against its own page table,
+    /// apart from a SharedThread kernel-mode caller (e.g. the shell),
+    /// whose pointers are its own plain kernel-address locals and were
+    /// never meant to be validated as "user" memory.
+    pub is_ring3: bool,
     pub state: TaskState,
     pub mailbox: Option<Message>, 
     stack: TaskStack,
@@ -116,6 +135,8 @@ impl Task {
             parent_id: 0,
             sp: 0,
             memory_root: 0,
+            owns_memory_root: false,
+            is_ring3: false,
             state: TaskState::Terminated,
             mailbox: None,
             stack: TaskStack([0; STACK_SIZE]),
@@ -150,6 +171,7 @@ impl Task {
         entry: extern "C" fn() -> !, 
         mode: ExecutionMode, 
         memory_root: usize,
+        owns_memory_root: bool,
         user_stack_top: usize,
     ) {
         self.id = id;
@@ -157,6 +179,12 @@ impl Task {
         self.state = TaskState::Ready;
         self.fd_table = Some(crate::fd::FileDescriptorTable::new()); 
         self.memory_root = memory_root;
+        self.owns_memory_root = owns_memory_root;
+
+        // Shared by both arch branches below -- previously computed
+        // twice (once per `#[cfg]` block) with identical logic.
+        let is_user = mode == ExecutionMode::IsolatedProcess && user_stack_top != 0;
+        self.is_ring3 = is_user;
 
         // `stack` is where the very first resume-frame lives either way
         // -- that's what makes the *first* switch into any task, ring-3
@@ -172,7 +200,6 @@ impl Task {
 
         #[cfg(target_arch = "x86_64")]
         unsafe {
-            let is_user = mode == ExecutionMode::IsolatedProcess && user_stack_top != 0;
             frame_ptr.write(TaskContext {
                 r15: 0, r14: 0, r13: 0, r12: 0,
                 r11: 0, r10: 0, r9: 0,  r8: 0,
@@ -198,7 +225,6 @@ impl Task {
             // SPSR.M=EL0t switches to it automatically, but only once
             // interrupts.rs's "Lower EL" vectors have actually restored
             // it from here first.
-            let is_user = mode == ExecutionMode::IsolatedProcess && user_stack_top != 0;
             frame_ptr.write(TaskContext {
                 regs: [0; 31],
                 spsr: if is_user { 0x0 } else { 0x5 },
@@ -243,6 +269,17 @@ impl Task {
 /// Gets the ID of the currently executing task.
 pub fn current_task_id() -> usize {
     CURRENT_TASK.load(Ordering::Relaxed)
+}
+
+/// Returns `(memory_root, is_ring3)` for the currently scheduled task.
+/// Used by the syscall layer to decide whether (and against which
+/// table) a raw caller-supplied pointer needs validating -- see
+/// `syscall::validate_user_ptr`.
+pub fn current_task_access_info() -> (usize, bool) {
+    unsafe {
+        let idx = CURRENT_TASK.load(Ordering::Relaxed);
+        (TASKS[idx].memory_root, TASKS[idx].is_ring3)
+    }
 }
 
 /// Sends a message to a destination task and wakes it up if it was asleep.
@@ -338,14 +375,14 @@ fn current_memory_root() -> usize {
 pub fn spawn(entry_point: extern "C" fn() -> !, mode: ExecutionMode, user_stack_top: usize) -> bool {
     unsafe {
         let caller_root = current_memory_root();
-        let memory_root = match mode {
-            ExecutionMode::SharedThread => caller_root,
+        let (memory_root, owns_memory_root) = match mode {
+            ExecutionMode::SharedThread => (caller_root, false),
             ExecutionMode::IsolatedProcess => allocate_isolated_page_table(caller_root),
         };
 
         for i in 0..MAX_TASKS {
             if TASKS[i].state == TaskState::Terminated {
-                TASKS[i].init(i, entry_point, mode, memory_root, user_stack_top);
+                TASKS[i].init(i, entry_point, mode, memory_root, owns_memory_root, user_stack_top);
 
                 if !TASK_INITIALIZED.load(Ordering::Acquire) {
                     TASKS[0].state = TaskState::Running;
@@ -386,12 +423,12 @@ pub fn spawn_at(entry_addr: usize, mode: ExecutionMode, user_stack_top: usize) -
 /// mapped in whatever table actually lands in CR3/TTBR0, so the very
 /// first instruction fetch after the ring-3 transition page-faults.
 /// (This is exactly what was happening before this function existed.)
-fn spawn_isolated_at(entry_addr: usize, memory_root: usize, user_stack_top: usize) -> bool {
+fn spawn_isolated_at(entry_addr: usize, memory_root: usize, owns_memory_root: bool, user_stack_top: usize) -> bool {
     let entry_point: extern "C" fn() -> ! = unsafe { core::mem::transmute(entry_addr) };
     unsafe {
         for i in 0..MAX_TASKS {
             if TASKS[i].state == TaskState::Terminated {
-                TASKS[i].init(i, entry_point, ExecutionMode::IsolatedProcess, memory_root, user_stack_top);
+                TASKS[i].init(i, entry_point, ExecutionMode::IsolatedProcess, memory_root, owns_memory_root, user_stack_top);
 
                 if !TASK_INITIALIZED.load(Ordering::Acquire) {
                     TASKS[0].state = TaskState::Running;
@@ -406,12 +443,20 @@ fn spawn_isolated_at(entry_addr: usize, memory_root: usize, user_stack_top: usiz
 }
 
 
-/// Allocates or clones a new page table root structure for isolated processes.
-fn allocate_isolated_page_table(parent_root: usize) -> usize {
+/// Allocates a new page table root for an isolated process. Returns
+/// `(root, true)` when `root` is a fresh frame this process
+/// exclusively owns. On allocation failure this falls back to sharing
+/// `parent_root` so the caller keeps running instead of the spawn
+/// failing outright -- `(parent_root, false)` tells callers this root
+/// is *not* this task's to free (see `Task::owns_memory_root`), since
+/// it's the parent's live table, not a private one.
+fn allocate_isolated_page_table(parent_root: usize) -> (usize, bool) {
     unsafe {
-        crate::memory::create_process_page_table().unwrap_or(parent_root)
+        match crate::memory::create_process_page_table() {
+            Some(root) => (root, true),
+            None => (parent_root, false),
+        }
     }
-    
 }
 
 /// Maps a small stack for an isolated process's ring-3 code, in that
@@ -492,7 +537,7 @@ pub fn spawn_from_elf(elf_bytes: &[u8]) -> bool {
     let parent_root = current_memory_root();
     
     // 1. Create a new memory space for the process
-    let page_table_root = allocate_isolated_page_table(parent_root);
+    let (page_table_root, owns_memory_root) = allocate_isolated_page_table(parent_root);
     
     // 2. Load the ELF into that new memory space
     let entry_point = match crate::elf::load_elf_to_process(elf_bytes, page_table_root) {
@@ -511,7 +556,7 @@ pub fn spawn_from_elf(elf_bytes: &[u8]) -> bool {
     //    steps 2 and 3 actually mapped the ELF's segments and stack
     //    into. See spawn_isolated_at for why this can't go through the
     //    ordinary spawn_at/spawn path.
-    spawn_isolated_at(entry_point, page_table_root, user_stack_top)
+    spawn_isolated_at(entry_point, page_table_root, owns_memory_root, user_stack_top)
 }
 
 
@@ -619,6 +664,45 @@ pub extern "C" fn run_schedule(current_sp: usize) -> usize {
                         "isb",
                         root = in(reg) next_root,
                         options(nostack, preserves_flags),
+                    );
+                }
+
+                // --- Reclaim a terminated task's private memory ---
+                // Safe exactly here, not in `exit()` itself: the
+                // address-space switch above (if it ran) has already
+                // moved CR3/TTBR0_EL1 off `current_idx`'s table, so
+                // freeing its frames now can't pull memory out from
+                // under a translation the CPU is still using. `exit()`
+                // can't do this itself -- by the time it could, it
+                // would be freeing its own currently-active address
+                // space out from under itself, mid-instruction.
+                //
+                // `owns_memory_root` (see its doc comment on `Task`)
+                // is what keeps this from ever freeing a table another
+                // task still depends on: a SharedThread's root is the
+                // caller's live table, and an IsolatedProcess that fell
+                // back to sharing its parent's table after an
+                // allocation failure doesn't own it either. Only a
+                // root this exact task got exclusively is freed.
+                //
+                // Runs once per terminated task, not once per tick:
+                // the round-robin search above only ever selects a
+                // `Ready` task as `next_idx`, so `CURRENT_TASK` can
+                // never point back at this now-Terminated slot again
+                // on a later call -- not until a future `spawn()`
+                // reuses it, which re-Readies it with a fresh
+                // `owns_memory_root` for the new occupant first.
+                if TASKS[current_idx].state == TaskState::Terminated
+                    && TASKS[current_idx].owns_memory_root
+                {
+                    let dead_root = TASKS[current_idx].memory_root;
+                    // Cleared before the (potentially long) free walk,
+                    // not after -- belt-and-braces against this same
+                    // branch somehow running twice for one slot.
+                    TASKS[current_idx].owns_memory_root = false;
+                    TASKS[current_idx].memory_root = 0;
+                    crate::vmm::free_process_page_table(
+                        dead_root as *mut crate::vmm::arch::PageTable,
                     );
                 }
 
