@@ -1,0 +1,16 @@
+[package]
+name = "test_app"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# Link the local library crate
+libmitos = { path = "../libmitos" }
+
+# Production optimizations for minimal ELF payload size
+[profile.release]
+panic = "abort"   # No unwinding bloat
+opt-level = "z"   # Optimize for size
+lto = true        # Link-time optimization across dependencies
+strip = true      # Strip debug symbols
+codegen-units = 1 # Better optimization at the cost of compile time
