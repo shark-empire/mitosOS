@@ -25,6 +25,18 @@ pub mod arch {
             (self.0 & 1) != 0
         }
 
+        /// Bit 2 (U/S). Used by the syscall-layer pointer validator to
+        /// confirm a ring-3-supplied address is actually inside that
+        /// process's own mapped memory before the kernel touches it.
+        pub fn is_user_accessible(&self) -> bool {
+            (self.0 & (1 << 2)) != 0
+        }
+
+        /// Bit 1 (R/W).
+        pub fn is_writable(&self) -> bool {
+            (self.0 & (1 << 1)) != 0
+        }
+
         pub fn physical_address(&self) -> usize {
             (self.0 & 0x000F_FFFF_FFFF_F000) as usize
         }
@@ -207,6 +219,18 @@ pub mod arch {
     impl PageTableEntry {
         pub fn is_present(&self) -> bool {
             (self.0 & 1) != 0
+        }
+
+        /// AP[1] (bit 6) -- see `set_frame` above, which sets this same
+        /// bit for `flags.user_accessible`.
+        pub fn is_user_accessible(&self) -> bool {
+            (self.0 & (1 << 6)) != 0
+        }
+
+        /// AP[2] (bit 7) is the *read-only* bit -- `set_frame` sets it
+        /// when `!flags.writable`, so writable is this bit being clear.
+        pub fn is_writable(&self) -> bool {
+            (self.0 & (1 << 7)) == 0
         }
 
         pub fn physical_address(&self) -> usize {
@@ -467,5 +491,146 @@ pub fn handle_page_fault(fault_addr: usize, is_present: bool, is_user: bool) -> 
 
     unsafe {
         arch::map_page(root, aligned_virt, frame, flags).is_ok()
+    }
+}
+
+// =========================================================================
+// Process address-space teardown
+// =========================================================================
+
+/// Frees every physical frame reachable from `root`'s user-space region,
+/// then frees `root` itself.
+///
+/// `map_page` always walks a full 4 levels for a freshly-mapped page --
+/// this kernel never emits a huge/block leaf itself, though
+/// `translate_addr`/`handle_page_fault` above know how to read one if
+/// something else ever put one there. Assuming a fixed-depth structure
+/// below `root` (root -> L1 -> L2 -> L3, with L3's own entries as the
+/// actual data frames) is therefore still safe for every root this
+/// function is ever called on: exclusively-owned process roots built
+/// the ordinary way, via ELF loading and demand paging, both of which
+/// go through `map_page`. Top-level index 0 is the kernel's own shared
+/// mapping (installed by `memory::create_process_page_table` as a copy
+/// of the live kernel root -- see `memory::USER_SPACE_BASE`'s doc
+/// comment) and must never be walked into here; every other top-level
+/// index is guaranteed, by that same design, to be either empty or
+/// entirely private to this one process.
+///
+/// # Safety
+/// `root` must be a page table nothing is actively translating
+/// through anymore -- not the live CR3/TTBR0_EL1 of this or any other
+/// core, and not `memory_root` of any other still-alive task (a
+/// `SharedThread` or an `IsolatedProcess` that fell back to sharing
+/// its parent's table both alias another owner's root; freeing those
+/// is exactly what `Task::owns_memory_root` exists to prevent -- see
+/// its use in `task::run_schedule`). Calling this on a root that's
+/// still referenced anywhere frees memory that's still live, which
+/// the allocator can then hand out to something else while the old
+/// mapping can still reach it.
+pub unsafe fn free_process_page_table(root: *mut arch::PageTable) {
+    unsafe {
+        for l0 in 1..512 {
+            let e0 = &(*root).entries[l0];
+            if !e0.is_present() { continue; }
+            let l1_table = e0.physical_address() as *mut arch::PageTable;
+
+            for l1 in 0..512 {
+                let e1 = &(*l1_table).entries[l1];
+                if !e1.is_present() { continue; }
+                let l2_table = e1.physical_address() as *mut arch::PageTable;
+
+                for l2 in 0..512 {
+                    let e2 = &(*l2_table).entries[l2];
+                    if !e2.is_present() { continue; }
+                    let l3_table = e2.physical_address() as *mut arch::PageTable;
+
+                    for l3 in 0..512 {
+                        let e3 = &(*l3_table).entries[l3];
+                        if !e3.is_present() { continue; }
+                        // Leaf: an actual page the process owned.
+                        crate::memory::vmm_free_frame(e3.physical_address());
+                    }
+                    crate::memory::vmm_free_frame(l3_table as usize);
+                }
+                crate::memory::vmm_free_frame(l2_table as usize);
+            }
+            crate::memory::vmm_free_frame(l1_table as usize);
+        }
+        crate::memory::vmm_free_frame(root as usize);
+    }
+}
+
+// =========================================================================
+// Syscall-layer user-pointer validation
+// =========================================================================
+
+/// Returns the next-level table a present entry points to, or `None`
+/// for a not-present one -- a read-only counterpart to `next_table`
+/// (inside each `arch` module), since validation must never allocate
+/// or mutate anything.
+fn present_child(entry: &arch::PageTableEntry) -> Option<*mut arch::PageTable> {
+    if entry.is_present() {
+        Some(entry.physical_address() as *mut arch::PageTable)
+    } else {
+        None
+    }
+}
+
+/// Checks one 4KB page. `virt` must already be page-aligned.
+fn page_is_user_accessible(root: *mut arch::PageTable, virt: usize, need_write: bool) -> bool {
+    let l0_idx = (virt >> 39) & 0x1FF;
+    let l1_idx = (virt >> 30) & 0x1FF;
+    let l2_idx = (virt >> 21) & 0x1FF;
+    let l3_idx = (virt >> 12) & 0x1FF;
+
+    unsafe {
+        let Some(l1) = present_child(&(*root).entries[l0_idx]) else { return false };
+        let Some(l2) = present_child(&(*l1).entries[l1_idx]) else { return false };
+        let Some(l3) = present_child(&(*l2).entries[l2_idx]) else { return false };
+        let leaf = &(*l3).entries[l3_idx];
+        leaf.is_present() && leaf.is_user_accessible() && (!need_write || leaf.is_writable())
+    }
+}
+
+/// Confirms `[ptr, ptr+len)` lies entirely within `root`'s own
+/// present, user-accessible mapped memory (and is writable throughout,
+/// if `need_write`) before the kernel dereferences a syscall's raw
+/// caller-supplied pointer.
+///
+/// This exists because `sys_write`/`sys_read`/`sys_uname` used to
+/// trust that pointer completely: `core::slice::from_raw_parts(ptr,
+/// len)` on whatever a ring-3 process handed over, no check that it's
+/// even inside that process's own address space. Since syscalls run
+/// at ring 0/EL1 with the full kernel mapping active, a `ptr` pointing
+/// at kernel memory would have been read or overwritten exactly like
+/// any other buffer -- an arbitrary kernel-memory read/write primitive
+/// available to any userspace program.
+///
+/// Only meaningful for an actual ring-3 caller; see
+/// `syscall::validate_user_ptr`, the sole caller, for why a
+/// SharedThread (kernel-mode) caller skips this entirely instead of
+/// calling in with `root` = the kernel's own live table.
+pub fn validate_user_range(root: usize, ptr: usize, len: usize, need_write: bool) -> bool {
+    if len == 0 {
+        return true;
+    }
+    let Some(end) = ptr.checked_add(len) else { return false };
+    if ptr < crate::memory::USER_SPACE_BASE {
+        return false;
+    }
+
+    let root = root as *mut arch::PageTable;
+    let first_page = ptr & !0xFFF;
+    let last_page = (end - 1) & !0xFFF;
+
+    let mut page = first_page;
+    loop {
+        if !page_is_user_accessible(root, page, need_write) {
+            return false;
+        }
+        if page == last_page {
+            return true;
+        }
+        page += 0x1000;
     }
 }
