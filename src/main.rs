@@ -165,6 +165,8 @@ for dev in scan_pci_devices {
 let _ = writeln!(uart, "-------------------------");
     }
 
+    crate::hal::init();
+
     // Initialize hardware system call MSRs
 crate::syscall::init_syscall_hardware();
 
