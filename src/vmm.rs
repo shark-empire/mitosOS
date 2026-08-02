@@ -137,26 +137,28 @@ pub mod arch {
         let pd_idx   = (virt >> 21) & 0x1FF;
         let pt_idx   = (virt >> 12) & 0x1FF;
 
-        let pml4_entry = &mut (*root).entries[pml4_idx];
-        if !pml4_entry.is_present() { return Err(MemoryError::InvalidAddress); }
+        unsafe {
+            let pml4_entry = &mut (*root).entries[pml4_idx];
+            if !pml4_entry.is_present() { return Err(MemoryError::InvalidAddress); }
 
-        let pdpt = pml4_entry.physical_address() as *mut PageTable;
-        let pdpt_entry = &mut (*pdpt).entries[pdpt_idx];
-        if !pdpt_entry.is_present() { return Err(MemoryError::InvalidAddress); }
+            let pdpt = pml4_entry.physical_address() as *mut PageTable;
+            let pdpt_entry = &mut (*pdpt).entries[pdpt_idx];
+            if !pdpt_entry.is_present() { return Err(MemoryError::InvalidAddress); }
 
-        let pd = pdpt_entry.physical_address() as *mut PageTable;
-        let pd_entry = &mut (*pd).entries[pd_idx];
-        if !pd_entry.is_present() { return Err(MemoryError::InvalidAddress); }
+            let pd = pdpt_entry.physical_address() as *mut PageTable;
+            let pd_entry = &mut (*pd).entries[pd_idx];
+            if !pd_entry.is_present() { return Err(MemoryError::InvalidAddress); }
 
-        let pt = pd_entry.physical_address() as *mut PageTable;
-        let pt_entry = &mut (*pt).entries[pt_idx];
-        
-        if !pt_entry.is_present() {
-            return Err(MemoryError::InvalidAddress);
+            let pt = pd_entry.physical_address() as *mut PageTable;
+            let pt_entry = &mut (*pt).entries[pt_idx];
+
+            if !pt_entry.is_present() {
+                return Err(MemoryError::InvalidAddress);
+            }
+
+            // Clear the entry
+            pt_entry.0 = 0;
         }
-
-        // Clear the entry
-        pt_entry.0 = 0;
 
         // Invalidate the TLB cache for this specific virtual address
         unsafe {
@@ -177,32 +179,34 @@ pub mod arch {
         let pt_idx   = (virt >> 12) & 0x1FF;
         let offset   = virt & 0xFFF;
 
-        let pml4_entry = &(*root).entries[pml4_idx];
-        if !pml4_entry.is_present() { return None; }
+        unsafe {
+            let pml4_entry = &(*root).entries[pml4_idx];
+            if !pml4_entry.is_present() { return None; }
 
-        let pdpt = pml4_entry.physical_address() as *const PageTable;
-        let pdpt_entry = &(*pdpt).entries[pdpt_idx];
-        if !pdpt_entry.is_present() { return None; }
+            let pdpt = pml4_entry.physical_address() as *const PageTable;
+            let pdpt_entry = &(*pdpt).entries[pdpt_idx];
+            if !pdpt_entry.is_present() { return None; }
 
-        // Check for 1GB Huge Page at PDPT level
-        if (pdpt_entry.0 & (1 << 7)) != 0 {
-            return Some((pdpt_entry.physical_address() & !0x3FFF_FFFF) + (virt & 0x3FFF_FFFF));
+            // Check for 1GB Huge Page at PDPT level
+            if (pdpt_entry.0 & (1 << 7)) != 0 {
+                return Some((pdpt_entry.physical_address() & !0x3FFF_FFFF) + (virt & 0x3FFF_FFFF));
+            }
+
+            let pd = pdpt_entry.physical_address() as *const PageTable;
+            let pd_entry = &(*pd).entries[pd_idx];
+            if !pd_entry.is_present() { return None; }
+
+            // Check for 2MB Huge Page at PD level
+            if (pd_entry.0 & (1 << 7)) != 0 {
+                return Some((pd_entry.physical_address() & !0x1F_FFFF) + (virt & 0x1F_FFFF));
+            }
+
+            let pt = pd_entry.physical_address() as *const PageTable;
+            let pt_entry = &(*pt).entries[pt_idx];
+            if !pt_entry.is_present() { return None; }
+
+            Some(pt_entry.physical_address() + offset)
         }
-
-        let pd = pdpt_entry.physical_address() as *const PageTable;
-        let pd_entry = &(*pd).entries[pd_idx];
-        if !pd_entry.is_present() { return None; }
-
-        // Check for 2MB Huge Page at PD level
-        if (pd_entry.0 & (1 << 7)) != 0 {
-            return Some((pd_entry.physical_address() & !0x1F_FFFF) + (virt & 0x1F_FFFF));
-        }
-
-        let pt = pd_entry.physical_address() as *const PageTable;
-        let pt_entry = &(*pt).entries[pt_idx];
-        if !pt_entry.is_present() { return None; }
-
-        Some(pt_entry.physical_address() + offset)
     }
 
 }
@@ -360,26 +364,28 @@ pub mod arch {
         let l2_idx = (virt >> 21) & 0x1FF;
         let l3_idx = (virt >> 12) & 0x1FF;
 
-        let l0_entry = &mut (*root).entries[l0_idx];
-        if !l0_entry.is_present() { return Err(MemoryError::InvalidAddress); }
+        unsafe {
+            let l0_entry = &mut (*root).entries[l0_idx];
+            if !l0_entry.is_present() { return Err(MemoryError::InvalidAddress); }
 
-        let l1 = l0_entry.physical_address() as *mut PageTable;
-        let l1_entry = &mut (*l1).entries[l1_idx];
-        if !l1_entry.is_present() { return Err(MemoryError::InvalidAddress); }
+            let l1 = l0_entry.physical_address() as *mut PageTable;
+            let l1_entry = &mut (*l1).entries[l1_idx];
+            if !l1_entry.is_present() { return Err(MemoryError::InvalidAddress); }
 
-        let l2 = l1_entry.physical_address() as *mut PageTable;
-        let l2_entry = &mut (*l2).entries[l2_idx];
-        if !l2_entry.is_present() { return Err(MemoryError::InvalidAddress); }
+            let l2 = l1_entry.physical_address() as *mut PageTable;
+            let l2_entry = &mut (*l2).entries[l2_idx];
+            if !l2_entry.is_present() { return Err(MemoryError::InvalidAddress); }
 
-        let l3 = l2_entry.physical_address() as *mut PageTable;
-        let l3_entry = &mut (*l3).entries[l3_idx];
-        
-        if !l3_entry.is_present() {
-            return Err(MemoryError::InvalidAddress);
+            let l3 = l2_entry.physical_address() as *mut PageTable;
+            let l3_entry = &mut (*l3).entries[l3_idx];
+
+            if !l3_entry.is_present() {
+                return Err(MemoryError::InvalidAddress);
+            }
+
+            // Clear the entry (0 makes it an invalid descriptor)
+            l3_entry.0 = 0;
         }
-
-        // Clear the entry (0 makes it an invalid descriptor)
-        l3_entry.0 = 0;
 
         // Rigorous ARM TLB Invalidation & memory barrier synchronization
         unsafe {
@@ -405,32 +411,34 @@ pub mod arch {
         let l3_idx = (virt >> 12) & 0x1FF;
         let offset = virt & 0xFFF;
 
-        let l0_entry = &(*root).entries[l0_idx];
-        if !l0_entry.is_present() { return None; }
+        unsafe {
+            let l0_entry = &(*root).entries[l0_idx];
+            if !l0_entry.is_present() { return None; }
 
-        let l1 = l0_entry.physical_address() as *const PageTable;
-        let l1_entry = &(*l1).entries[l1_idx];
-        if !l1_entry.is_present() { return None; }
+            let l1 = l0_entry.physical_address() as *const PageTable;
+            let l1_entry = &(*l1).entries[l1_idx];
+            if !l1_entry.is_present() { return None; }
 
-        // Check if L1 is a block descriptor (1GB) instead of a table descriptor
-        if (l1_entry.0 & 0b11) == 0b01 {
-            return Some((l1_entry.physical_address() & !0x3FFF_FFFF) + (virt & 0x3FFF_FFFF));
+            // Check if L1 is a block descriptor (1GB) instead of a table descriptor
+            if (l1_entry.0 & 0b11) == 0b01 {
+                return Some((l1_entry.physical_address() & !0x3FFF_FFFF) + (virt & 0x3FFF_FFFF));
+            }
+
+            let l2 = l1_entry.physical_address() as *const PageTable;
+            let l2_entry = &(*l2).entries[l2_idx];
+            if !l2_entry.is_present() { return None; }
+
+            // Check if L2 is a block descriptor (2MB) instead of a table descriptor
+            if (l2_entry.0 & 0b11) == 0b01 {
+                return Some((l2_entry.physical_address() & !0x1F_FFFF) + (virt & 0x1F_FFFF));
+            }
+
+            let l3 = l2_entry.physical_address() as *const PageTable;
+            let l3_entry = &(*l3).entries[l3_idx];
+            if !l3_entry.is_present() { return None; }
+
+            Some(l3_entry.physical_address() + offset)
         }
-
-        let l2 = l1_entry.physical_address() as *const PageTable;
-        let l2_entry = &(*l2).entries[l2_idx];
-        if !l2_entry.is_present() { return None; }
-
-        // Check if L2 is a block descriptor (2MB) instead of a table descriptor
-        if (l2_entry.0 & 0b11) == 0b01 {
-            return Some((l2_entry.physical_address() & !0x1F_FFFF) + (virt & 0x1F_FFFF));
-        }
-
-        let l3 = l2_entry.physical_address() as *const PageTable;
-        let l3_entry = &(*l3).entries[l3_idx];
-        if !l3_entry.is_present() { return None; }
-
-        Some(l3_entry.physical_address() + offset)
     }
 
 }
