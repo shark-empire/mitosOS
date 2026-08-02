@@ -98,6 +98,42 @@ mod imp {
         // ESR_EL1[31:26] = Exception Class (EC): what kind of trap this was.
         let ec = (esr >> 26) & 0x3F;
 
+           if ec == 0x15 {
+        // Registers x0-x3 contain sys_num, arg0, arg1, arg2
+        let sys_num: usize;
+        let arg0: usize;
+        let arg1: usize;
+        let arg2: usize;
+
+        unsafe {
+            core::arch::asm!(
+                "",
+                out("x0") sys_num,
+                out("x1") arg0,
+                out("x2") arg1,
+                out("x3") arg2,
+                options(nomem, nostack)
+            );
+        }
+
+        let ret = crate::syscall::dispatch_syscall(sys_num, arg0, arg1, arg2);
+
+        // Store return code in x0 and advance ELR_EL1 past the 4-byte 'svc #0' instruction
+        unsafe {
+            core::arch::asm!(
+                "msr elr_el1, {}",
+                in(reg) elr + 4,
+                options(nomem, nostack)
+            );
+            core::arch::asm!(
+                "",
+                in("x0") ret,
+                options(nomem, nostack)
+            );
+        }
+        return;
+           }
+
 
          if ec == 0x20 || ec == 0x21 || ec == 0x24 || ec == 0x25 {
         let is_user = ec == 0x20 || ec == 0x24;
