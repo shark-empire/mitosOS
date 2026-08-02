@@ -229,8 +229,6 @@ pub unsafe fn reload_timer() {
 // ==========================================
 #[cfg(target_arch = "x86_64")]
 mod imp {
-    use core::fmt::Write;
-
     #[derive(Copy, Clone)]
     #[repr(C, packed)]
     struct IdtEntry {
