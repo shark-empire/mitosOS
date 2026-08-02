@@ -85,3 +85,42 @@ pub fn parse_rsdp(rsdp_phys_addr: usize) -> Result<usize, &'static str> {
         }
     }
 }
+
+// src/hal/acpi.rs
+
+/// Scans the legacy BIOS memory region (0x000E0000 - 0x000FFFFF) to locate the RSDP.
+pub fn find_rsdp_legacy() -> Option<usize> {
+    let start_addr: usize = 0x000E_0000;
+    let end_addr: usize = 0x000F_FFFF;
+
+    // The RSDP is guaranteed to be on a 16-byte boundary
+    let mut current_addr = start_addr;
+    
+    while current_addr < end_addr {
+        // Read 8 bytes safely to check the signature
+        let signature = unsafe { core::slice::from_raw_parts(current_addr as *const u8, 8) };
+        
+        if signature == b"RSD PTR " {
+            // We found the signature, now validate the checksum
+            let rsdp = unsafe { &*(current_addr as *const RsdpDescriptor) };
+            
+            // Check if it's an ACPI 2.0 extended descriptor first
+            if rsdp.revision >= 2 {
+                let rsdp20 = unsafe { &*(current_addr as *const RsdpDescriptor20) };
+                if rsdp20.is_valid_extended() {
+                    return Some(current_addr);
+                }
+            }
+            
+            // Fallback to ACPI 1.0 validation
+            if rsdp.is_valid() {
+                return Some(current_addr);
+            }
+        }
+        
+        current_addr += 16;
+    }
+
+    None
+}
+
