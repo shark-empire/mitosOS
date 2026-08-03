@@ -124,10 +124,10 @@ protected_mode_start:
     cld
     rep movsd
 
-    ; --- Build Page Tables: Higher-Half & Full 1GB Identity Mappings ---
-    ; Zero 4 pages (PML4 @ 0x1000, PDPT @ 0x2000, PD @ 0x3000, Extra @ 0x4000)
+    ; --- Build Page Tables: Higher-Half & Identity Mappings ---
+    ; Zero 3 pages (PML4 @ 0x1000, PDPT @ 0x2000, PD @ 0x3000) = 12KB
     mov edi, 0x1000          
-    mov ecx, 4096            
+    mov ecx, 3072            
     xor eax, eax
     rep stosd
 
@@ -139,17 +139,18 @@ protected_mode_start:
     ; Link PDPT[0] -> PD (0x3000)
     mov dword [0x2000], 0x3003
     
-    ; Populate 512 entries in PD = 512 x 2MB = 1GB Physical RAM & MMIO Mapped!
-    ; Fixes QEMU Triple Fault by identity-mapping memory above 4MB and high PCI BAR MMIO.
+    ; Map first 1GB (0x0 to 0x3FFFFFFF) using 512 2MB Huge Pages
+    ; This prevents #PF when the physical frame allocator hands out frames 
+    ; above 4MB, or when accessing PCI BAR MMIO in high memory.
     mov edi, 0x3000
-    mov eax, 0x83                ; Present + Writable + PageSize (2MB Huge)
+    mov eax, 0x83                ; Present + Writable + PageSize (2MB)
     mov ecx, 512
-.map_1gb_loop:
+.map_pd_loop:
     mov [edi], eax
     mov dword [edi + 4], 0
     add eax, 0x200000            ; Advance physical address by 2MB
     add edi, 8
-    loop .map_1gb_loop
+    loop .map_pd_loop
 
     ; Load CR3
     mov eax, 0x1000
