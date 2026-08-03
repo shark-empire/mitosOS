@@ -186,7 +186,7 @@ mod imp {
             );
             let _ = writeln!(uart, "[OS] Terminating isolated task...");
 
-            crate::task::terminate_current_task();
+            crate::task::exit();
         }
     }
 
@@ -470,7 +470,7 @@ mod imp {
             );
             let _ = writeln!(uart, "[OS] Terminating isolated task...");
 
-            crate::task::terminate_current_task();
+            crate::task::exit();
         }
 
         // Kernel-mode fault: system halt
