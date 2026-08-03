@@ -1,6 +1,7 @@
 // Repo path: src/main.rs
 #![no_std]
 #![no_main]
+#![feature(abi_x86_interrupt)]
 
 // Unlocks Rust's official smart pointers and collections (Box, Vec, String, etc.)
 extern crate alloc;
