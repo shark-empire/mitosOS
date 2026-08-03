@@ -3,6 +3,8 @@
 //! Implements AHCI 1.3.1 with interrupt-driven DMA completion, 
 //! BIOS/OS handoff, port enumeration, and 48-bit LBA sector reads/writes.
 
+#[cfg(target_arch = "x86_64")]
+use x86_64::structures::idt::InterruptStackFrame;
 
 
 use core::ptr::{read_volatile, write_volatile};
@@ -598,7 +600,7 @@ impl AhciController {
 /// Global Top-Level AHCI Interrupt Handler for x86_64 (Registered in IDT)
 #[cfg(target_arch = "x86_64")]
 #[unsafe(no_mangle)]
-pub extern "x86-interrupt" fn ahci_irq_handler() {
+pub extern "x86-interrupt" fn ahci_irq_handler(_frame: x86_64::structures::idt::InterruptStackFrame) {
     let ahci_base = 0xFFFF_8000_4000_0000 as *mut u32; // Active HBA MMIO Higher-Half Base
     
     unsafe {
@@ -628,6 +630,7 @@ pub extern "x86-interrupt" fn ahci_irq_handler() {
         write_volatile(lapic_eoi, 0);
     }
 }
+
 
 /// Global Top-Level AHCI Interrupt Handler for AArch64 (GIC / Standard C ABI)
 #[cfg(target_arch = "aarch64")]
