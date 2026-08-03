@@ -4,6 +4,19 @@
 
 use core::mem;
 
+/// Kernel higher-half offset (see bootloader/src/stage2.s's
+/// HIGHER_HALF_PML4_IDX): the bootloader tears down the low identity
+/// mapping (PML4[0]) before ever jumping into the kernel, so a raw
+/// physical address is never itself a dereferenceable pointer here --
+/// every physical access has to go through this offset instead, same as
+/// drivers/ahci.rs's MMIO base does.
+const PHYS_MEM_OFFSET: usize = 0xFFFF_8000_0000_0000;
+
+#[inline]
+fn phys_to_virt(phys: usize) -> usize {
+    phys + PHYS_MEM_OFFSET
+}
+
 /// The standard ACPI 1.0 Root System Description Pointer
 #[repr(C, packed)]
 pub struct RsdpDescriptor {
@@ -63,7 +76,7 @@ impl RsdpDescriptor20 {
 /// Returns the physical address of the RSDT (32-bit) or XSDT (64-bit).
 pub fn parse_rsdp(rsdp_phys_addr: usize) -> Result<usize, &'static str> {
     unsafe {
-        let rsdp = &*(rsdp_phys_addr as *const RsdpDescriptor);
+        let rsdp = &*(phys_to_virt(rsdp_phys_addr) as *const RsdpDescriptor);
         
         if &rsdp.signature != b"RSD PTR " {
             return Err("Invalid RSDP signature");
@@ -71,7 +84,7 @@ pub fn parse_rsdp(rsdp_phys_addr: usize) -> Result<usize, &'static str> {
 
         // Check if ACPI 2.0+ (revision 2 or higher)
         if rsdp.revision >= 2 {
-            let rsdp20 = &*(rsdp_phys_addr as *const RsdpDescriptor20);
+            let rsdp20 = &*(phys_to_virt(rsdp_phys_addr) as *const RsdpDescriptor20);
             if !rsdp20.is_valid_extended() {
                 return Err("Invalid ACPI 2.0 extended checksum");
             }
@@ -98,15 +111,15 @@ pub fn find_rsdp_legacy() -> Option<usize> {
     
     while current_addr < end_addr {
         // Read 8 bytes safely to check the signature
-        let signature = unsafe { core::slice::from_raw_parts(current_addr as *const u8, 8) };
+        let signature = unsafe { core::slice::from_raw_parts(phys_to_virt(current_addr) as *const u8, 8) };
         
         if signature == b"RSD PTR " {
             // We found the signature, now validate the checksum
-            let rsdp = unsafe { &*(current_addr as *const RsdpDescriptor) };
+            let rsdp = unsafe { &*(phys_to_virt(current_addr) as *const RsdpDescriptor) };
             
             // Check if it's an ACPI 2.0 extended descriptor first
             if rsdp.revision >= 2 {
-                let rsdp20 = unsafe { &*(current_addr as *const RsdpDescriptor20) };
+                let rsdp20 = unsafe { &*(phys_to_virt(current_addr) as *const RsdpDescriptor20) };
                 if rsdp20.is_valid_extended() {
                     return Some(current_addr);
                 }
