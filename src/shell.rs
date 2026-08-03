@@ -81,7 +81,7 @@ fn run_command(uart: &mut Uart, line: &str, history: &[String], ramdisk: &Option
         "help" => {
             let _ = writeln!(
                 uart,
-                "commands: help, about, uname, translate <hex vaddr>, ps, echo <text>, history, memstat, panic, ls, cat <file>, stat <file>, raw <file>, rxtest, diskread <lba> [count], run <file>"
+                "commands: help, about, uname, translate <hex vaddr>, ps, echo <text>, history, memstat, panic, ls, cat <file>, stat <file>, raw <file>, rxtest, diskread <lba> [count], diskwrite <lba> <text>, run <file>"
             );
         }
         "about" => {
@@ -265,6 +265,52 @@ fn run_command(uart: &mut Uart, line: &str, history: &[String], ramdisk: &Option
                 let _ = writeln!(uart, "diskread is only available on x86_64 (ATA PIO driver).");
             }
         }
+        "diskwrite" => {
+            #[cfg(target_arch = "x86_64")]
+            {
+                if args.len() < 3 {
+                    let _ = writeln!(
+                        uart,
+                        "Usage: diskwrite <lba> <text>  -- OVERWRITES that sector with <text>, zero-padded to 512B. Destructive, no undo."
+                    );
+                    return;
+                }
+                let lba: usize = match args[1].parse() {
+                    Ok(n) => n,
+                    Err(_) => {
+                        let _ = writeln!(uart, "Invalid LBA: '{}'", args[1]);
+                        return;
+                    }
+                };
+                let text = args[2].as_bytes();
+                if text.len() > 512 {
+                    let _ = writeln!(uart, "Text too long ({} bytes, max 512)", text.len());
+                    return;
+                }
+                let mut buf = [0u8; 512];
+                buf[..text.len()].copy_from_slice(text);
+
+                let mut ata = match crate::fs::ata::AtaDevice::new() {
+                    Ok(dev) => dev,
+                    Err(e) => {
+                        let _ = writeln!(uart, "ATA init failed: {:?}", e);
+                        return;
+                    }
+                };
+                match crate::block::BlockDevice::write_sector(&mut ata, lba, &buf) {
+                    Ok(()) => {
+                        let _ = writeln!(uart, "Wrote {} bytes to LBA {} (zero-padded to 512B, cache flushed).", text.len(), lba);
+                    }
+                    Err(e) => {
+                        let _ = writeln!(uart, "Write failed: {e}");
+                    }
+                }
+            }
+            #[cfg(not(target_arch = "x86_64"))]
+            {
+                let _ = writeln!(uart, "diskwrite is only available on x86_64 (ATA PIO driver).");
+            }
+        }
         "ls" => {
             if let Some(fs) = ramdisk {
                 let _ = writeln!(uart, "--- Ramdisk Contents ---");
@@ -356,16 +402,19 @@ fn run_command(uart: &mut Uart, line: &str, history: &[String], ramdisk: &Option
             drop(vfs);
 
             let _ = writeln!(uart, "Loading '{}' ({} bytes)...", target_file, bytes_read);
-            if crate::task::spawn_from_elf(&buffer[..bytes_read]) {
-                let _ = writeln!(uart, "Spawned as a new isolated (ring-3) process -- check 'ps'.");
-            } else {
-                let _ = writeln!(
-                    uart,
-                    "Failed to spawn '{}'. Common causes right now: no free task slot \
-                     (MAX_TASKS is 4, and two are already used by the background workers), \
-                     or the ELF failed to load/map -- see task.rs::spawn_from_elf.",
-                    target_file
-                );
+            match crate::process::spawn_and_run_elf(&buffer[..bytes_read]) {
+                Ok(()) => {
+                    let _ = writeln!(uart, "Spawned as a new isolated (ring-3) process -- check 'ps'.");
+                }
+                Err(e) => {
+                    let _ = writeln!(
+                        uart,
+                        "Failed to spawn '{}': {}. Common causes right now: no free task slot \
+                         (MAX_TASKS is 4, and two are already used by the background workers), \
+                         or the ELF failed to load/map -- see task.rs::spawn_from_elf.",
+                        target_file, e
+                    );
+                }
             }
         }
         "raw" => {

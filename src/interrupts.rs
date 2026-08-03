@@ -98,42 +98,6 @@ mod imp {
         // ESR_EL1[31:26] = Exception Class (EC): what kind of trap this was.
         let ec = (esr >> 26) & 0x3F;
 
-           if ec == 0x15 {
-        // Registers x0-x3 contain sys_num, arg0, arg1, arg2
-        let sys_num: usize;
-        let arg0: usize;
-        let arg1: usize;
-        let arg2: usize;
-
-        unsafe {
-            core::arch::asm!(
-                "",
-                out("x0") sys_num,
-                out("x1") arg0,
-                out("x2") arg1,
-                out("x3") arg2,
-                options(nomem, nostack)
-            );
-        }
-
-        let ret = crate::syscall::dispatch_syscall(sys_num, arg0, arg1, arg2);
-
-        // Store return code in x0 and advance ELR_EL1 past the 4-byte 'svc #0' instruction
-        unsafe {
-            core::arch::asm!(
-                "msr elr_el1, {}",
-                in(reg) elr + 4,
-                options(nomem, nostack)
-            );
-            core::arch::asm!(
-                "",
-                in("x0") ret,
-                options(nomem, nostack)
-            );
-        }
-        return;
-           }
-
 
          if ec == 0x20 || ec == 0x21 || ec == 0x24 || ec == 0x25 {
         let is_user = ec == 0x20 || ec == 0x24;
@@ -220,17 +184,18 @@ pub extern "C" fn handle_el0_sync_trap(
 
 #[cfg(target_arch = "aarch64")]
 pub unsafe fn init_aarch64_timer() {
-    let interval: u64 = 50_000_000; 
+    // Was: a hardcoded 50_000_000-tick interval here, duplicating (and
+    // silently diverging from) timer::hardware::init()'s dynamic
+    // CNTFRQ_EL0-derived one. A fixed constant only produces the
+    // intended TIMER_HZ tick rate on hardware whose counter frequency
+    // happens to match whatever this was tuned against; it's wrong on
+    // anything else, including real Raspberry Pi 3B hardware if its
+    // CNTFRQ_EL0 differs from QEMU's raspi3b default. This was CI-green
+    // regardless, since the boot test only checks that ticks happen at
+    // all, never that they happen at 100Hz specifically.
     unsafe {
-    core::arch::asm!(
-        "msr cntp_tval_el0, {0}",
-        "mov x1, #1",
-        "msr cntp_ctl_el0, x1", 
-        in(reg) interval,
-        out("x1") _,
-        options(nomem, nostack)
-    );
-    } 
+        crate::timer::hardware::init();
+    }
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -250,14 +215,13 @@ pub unsafe fn init_gic_timer_irq() {
 
 #[cfg(target_arch = "aarch64")]
 pub unsafe fn reload_timer() {
-    let interval: u64 = 50_000_000;
-   unsafe {
-    core::arch::asm!(
-        "msr cntp_tval_el0, {0}",
-        in(reg) interval,
-        options(nomem, nostack)
-    );
-   }
+    // Was: the same hardcoded-interval duplication as
+    // init_aarch64_timer above, called on every single tick instead of
+    // just once at boot -- see timer::hardware::reset_timer, the
+    // correct dynamic version this now delegates to.
+    unsafe {
+        crate::timer::hardware::reset_timer();
+    }
 }
 
 // ==========================================

@@ -276,7 +276,15 @@ pub fn alloc_frame() -> Option<usize> {
 }
 
 /// Maps a virtual address to a physical frame in the specified page table root.
-/// Maps a virtual address to a physical frame in the specified page table root.
+///
+/// x86_64-only in practice: its one caller (main.rs's framebuffer MMIO
+/// identity-mapping) is itself x86_64-only, since FB_ADDR is the QEMU
+/// 'pc' machine's fixed LFB address with no AArch64/Pi equivalent. The
+/// real, general-purpose page mapper for both architectures is
+/// `vmm::arch::map_page`; this one exists specifically for mapping a
+/// *known physical* address (MMIO) into an *existing* root passed as
+/// a raw `usize`, which is what the framebuffer setup needed.
+#[cfg_attr(target_arch = "aarch64", allow(dead_code))]
 pub unsafe fn map_page(page_table_root: usize, vaddr: usize, paddr: usize) -> Result<(), &'static str> {
     #[cfg(target_arch = "x86_64")]
     {

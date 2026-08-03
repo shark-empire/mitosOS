@@ -18,13 +18,12 @@ mod timer;
 mod vmm;
 mod drivers;
 pub mod task;
+pub mod process;
 mod uart;
 pub mod sync;
-pub mod process;
 pub mod syscall;
 pub mod version;
 pub mod addr;
-pub mod hal;
 #[cfg(target_arch = "x86_64")]
 pub mod pci;
 #[cfg(target_arch = "x86_64")]
@@ -36,9 +35,8 @@ pub mod mmu;
 use core::fmt::Write;
 use core::panic::PanicInfo;
 use crate::memory::{protect_boot_memory, MapFlags};
+#[cfg(target_arch = "x86_64")]
 use crate::graphics::{Framebuffer, Color};
-use crate::fd::FileDescriptorTable;
-use crate::ramdisk::TarFileSystem;
 use alloc::boxed::Box;
 
 const HEAP_START: usize = 0x150_000;
@@ -165,15 +163,6 @@ for dev in scan_pci_devices {
 let _ = writeln!(uart, "-------------------------");
     }
 
-    crate::hal::init();
-
-    // Initialize hardware system call MSRs
-crate::syscall::init_syscall_hardware();
-
-// Example: Load an embedded ELF binary from your ramdisk or memory slice
- crate::process::spawn_and_run_elf(EMBEDDED_USER_ELF)?;
-
-
 
 // Test frame allocation during initialization
 if let Some(frame) = crate::memory::alloc_frame() {
@@ -221,9 +210,13 @@ if let Some(frame) = crate::memory::alloc_frame() {
         let _data = MapFlags::kernel_data();
     
 
-    // 2. GRAPHICS: Initialize the screen
+    // 2. GRAPHICS: Initialize the screen (x86_64 only -- FB_ADDR below
+    // is the QEMU 'pc' machine's fixed VGA/Bochs LFB address, with no
+    // AArch64/Pi equivalent; a Pi framebuffer needs the mailbox
+    // property interface instead, which isn't implemented yet -- see
+    // graphics.rs).
     #[cfg(target_arch = "x86_64")]
-        {
+    {
     const FB_ADDR: usize = 0xFD000000;
     const FB_WIDTH: usize = 1024;
     const FB_HEIGHT: usize = 768;
@@ -232,19 +225,16 @@ if let Some(frame) = crate::memory::alloc_frame() {
     let mut fb = unsafe {
         // Identity-map the framebuffer's MMIO pages before anything touches
         // them -- writing through an unmapped physical address page-faults.
-        #[cfg(target_arch = "x86_64")]
-        {
-            let cr3: usize;
-            core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack));
-            let page_table_root = cr3 & !0xFFF;
+        let cr3: usize;
+        core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack));
+        let page_table_root = cr3 & !0xFFF;
 
-            let fb_pages = (FB_PITCH * FB_HEIGHT + 0xFFF) / 0x1000;
-            for i in 0..fb_pages {
-                let addr = FB_ADDR + i * 0x1000;
-                if let Err(e) = crate::memory::map_page(page_table_root, addr, addr) {
-                    let _ = writeln!(uart, "mitosOS: WARN framebuffer mapping failed: {e}");
-                    break;
-                }
+        let fb_pages = (FB_PITCH * FB_HEIGHT + 0xFFF) / 0x1000;
+        for i in 0..fb_pages {
+            let addr = FB_ADDR + i * 0x1000;
+            if let Err(e) = crate::memory::map_page(page_table_root, addr, addr) {
+                let _ = writeln!(uart, "mitosOS: WARN framebuffer mapping failed: {e}");
+                break;
             }
         }
 
@@ -254,22 +244,32 @@ if let Some(frame) = crate::memory::alloc_frame() {
     fb.clear(Color::BLACK);
     Framebuffer::draw_boot_splash(&mut fb);
     fb.draw_string(10, 70, "mitosOS System Init...", Color::GREEN);
-
-    // 3. HARDWARE: Start the timer
-    timer::hardware::init();
-    fb.draw_string(10, 80, "Timer: OK", Color::YELLOW);
-
-    // 4. FILESYSTEM: Load the Ramdisk
-    if let Some(_ramdisk) = TarFileSystem::new_embedded() {
-        fb.draw_string(10, 90, "Ramdisk: loaded", Color::CYAN);
-    } else {
-        fb.draw_string(10, 90, "Ramdisk: missing", Color::RED);
+    // Reflects the ramdisk mount already done above (`inited`) rather
+    // than a second, redundant TarFileSystem::new_embedded() call that
+    // used to live here just for this splash line.
+    fb.draw_string(
+        10, 90,
+        if inited.is_some() { "Ramdisk: loaded" } else { "Ramdisk: missing" },
+        Color::CYAN,
+    );
     }
 
-    // 5. USERSPACE: Prepare file descriptor table
-    let mut _root_fd_table = FileDescriptorTable::new();
+    // 3. HARDWARE: Start the timer.
+    // AArch64 arms its own physical timer earlier, inside
+    // interrupts::init() -- see interrupts::init_aarch64_timer, which
+    // now calls this same timer::hardware::init() instead of
+    // duplicating its logic with a stale hardcoded interval. So this
+    // call only matters for x86_64's PIT, which has no earlier init
+    // point.
+    #[cfg(target_arch = "x86_64")]
+    timer::hardware::init();
 
     // --- FAT32 Mounting (RAM-backed test volume) ---
+    // A RAM-backed block device is pure software with nothing
+    // architecture-specific about it, so -- unlike the framebuffer --
+    // this runs (and gets CI-tested) on both targets now, rather than
+    // being silently unreachable on AArch64 the way it used to be when
+    // this whole section was nested inside the x86_64-only block above.
     let ram_disk: alloc::boxed::Box<dyn block::BlockDevice> =
         alloc::boxed::Box::new(block::RamBlockDevice::new(256));
 
@@ -280,15 +280,12 @@ if let Some(frame) = crate::memory::alloc_frame() {
                 uart,
                 "mitosOS: FAT32 volume mounted at /disk ({bps}B/sector, {fats} FAT(s), {reserved} reserved, {spf} sectors/FAT)"
             );
-            fb.draw_string(10, 100, "FAT32 (ram): mounted", Color::MAGENTA);
             let fat_adapter = alloc::sync::Arc::new(crate::fs::fat32_adapter::Fat32Adapter::new(fat_fs));
             crate::fs::vfs::VFS.lock().mount("/disk", fat_adapter);
         }
         Err(e) => {
             let _ = writeln!(uart, "mitosOS: FAT32 mount skipped ({e})");
-            fb.draw_string(10, 100, "FAT32 (ram): skipped", Color::MAGENTA);
         }
-      }
     }
 
     // --- FAT32 Mounting (real ATA disk) ---

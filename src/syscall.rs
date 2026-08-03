@@ -1,8 +1,4 @@
-//! System Call Dispatcher and Hardware Trampoline layer for mitosOS.
-//!
-//! Provides ring 0/ring 3 memory boundary enforcement, POSIX-compatible 
-//! syscall dispatching, and hardware MSR/exception vector entry glue 
-//! for x86_64 and AArch64 targets.
+//! System Call Dispatcher layer for mitosOS.
 
 use core::fmt::Write;
 use crate::version::UtsName;
@@ -20,7 +16,6 @@ pub const SYS_UNAME: usize = 63;
 // Central Dispatcher
 // =========================================================================
 
-/// Central kernel entry point for system calls dispatched from low-level assembly glue.
 #[unsafe(no_mangle)]
 pub extern "C" fn syscall_handler(
     sys_num: usize,
@@ -39,16 +34,24 @@ pub extern "C" fn syscall_handler(
 }
 
 // =========================================================================
-// System Call Handlers & Validation
+// System Call Handlers
 // =========================================================================
 
-/// Returns true if it's safe for the kernel to read (`need_write = false`) 
-/// or write into (`need_write = true`) `len` bytes starting at `ptr`, on behalf 
-/// of whichever task is currently making this syscall.
+/// Returns true if it's safe for the kernel to read (`need_write =
+/// false`) or write into (`need_write = true`) `len` bytes starting at
+/// `ptr`, on behalf of whichever task is currently making this
+/// syscall.
 ///
-/// A SharedThread (kernel-mode) caller passes its own plain kernel-address 
-/// stack locals and is trusted unconditionally. Only a genuine ring-3 
-/// `IsolatedProcess` caller gets its pointer walked against its own page table.
+/// A SharedThread (kernel-mode) caller -- e.g. shell.rs's `cmd_uname`,
+/// which invokes this same `int 0x80`/`svc #0` path directly from
+/// ring 0 -- passes its own plain kernel-address stack locals; those
+/// were never "user" pages to begin with, so it's trusted
+/// unconditionally, same as before. Only a genuine ring-3
+/// `IsolatedProcess` caller gets its pointer walked against its own
+/// page table: without this, any userspace program could pass a
+/// kernel address to write()/read() and use the kernel's own,
+/// previously-unchecked `core::slice::from_raw_parts` as an arbitrary
+/// kernel-memory read/write primitive.
 fn validate_user_ptr(ptr: usize, len: usize, need_write: bool) -> bool {
     let (root, is_ring3) = crate::task::current_task_access_info();
     if !is_ring3 {
@@ -57,7 +60,7 @@ fn validate_user_ptr(ptr: usize, len: usize, need_write: bool) -> bool {
     crate::vmm::validate_user_range(root, ptr, len, need_write)
 }
 
-/// Writes raw byte buffers to standard output (1) or standard error (2).
+/// Writes data from a buffer to standard output (1) or standard error (2).
 fn sys_write(fd: usize, ptr: *const u8, len: usize) -> usize {
     if (fd != 1 && fd != 2) || ptr.is_null() || len == 0 {
         return usize::MAX;
@@ -69,12 +72,12 @@ fn sys_write(fd: usize, ptr: *const u8, len: usize) -> usize {
     let slice = unsafe { core::slice::from_raw_parts(ptr, len) };
     let mut uart = crate::uart::Uart::shared();
 
-    // Stream raw bytes directly to UART to support both UTF-8 strings and binary output
-    for &byte in slice {
-        let _ = uart.write_char(byte as char);
+    if let Ok(text) = core::str::from_utf8(slice) {
+        let _ = uart.write_str(text);
+        len
+    } else {
+        usize::MAX
     }
-
-    len
 }
 
 /// Reads input from standard input (0) into a target buffer.
@@ -110,26 +113,37 @@ fn sys_uname(ptr: *mut UtsName) -> usize {
         return usize::MAX;
     }
 
-    // Safety: Pointer validity and writable bounds verified above
+    // Safety: Verify pointer is non-null before writing
     let uts = unsafe { &mut *ptr };
     uts.populate();
 
     0 // Success
 }
 
-/// Releases `len` bytes of the calling process's own memory starting at `ptr`, 
-/// returning each page's physical frame to the allocator. Both `ptr` and `len` 
-/// must be page-aligned.
+/// Releases `len` bytes of the calling process's own memory starting
+/// at `ptr`, returning each page's physical frame to the allocator.
+/// Both `ptr` and `len` must be page-aligned -- a partial-page unmap
+/// would either leave a stray mapped remainder or free memory still
+/// backing the rest of that page for something else.
+///
+/// First real caller of `vmm::arch::translate_addr`/`unmap_page`
+/// (previously written for the demand-paging work but never invoked
+/// from anywhere): `translate_addr` has to run *before* `unmap_page`
+/// clears the entry, since `unmap_page` doesn't hand back the
+/// physical address it clears.
+///
+/// Unlike `sys_write`/`sys_read`/`sys_uname`, a SharedThread
+/// (kernel-mode) caller is rejected outright here rather than
+/// trusted: those syscalls trust a kernel-mode pointer because
+/// touching it directly is safe either way, but a SharedThread has no
+/// private "user" address space of its own to release pages from --
+/// there's no safe interpretation of "unmap this" for a plain kernel
+/// address, so this only ever operates on an actual ring-3 process's
+/// own validated memory.
 fn sys_munmap(ptr: usize, len: usize) -> usize {
-    // Check page alignment and underflow/overflow bounds
     if ptr & 0xFFF != 0 || len == 0 || len & 0xFFF != 0 {
         return usize::MAX;
     }
-
-    let end_addr = match ptr.checked_add(len) {
-        Some(end) => end,
-        None => return usize::MAX,
-    };
 
     let (root, is_ring3) = crate::task::current_task_access_info();
     if !is_ring3 || !crate::vmm::validate_user_range(root, ptr, len, false) {
@@ -137,9 +151,9 @@ fn sys_munmap(ptr: usize, len: usize) -> usize {
     }
 
     let root_ptr = root as *mut crate::vmm::arch::PageTable;
+    let end = ptr + len;
     let mut addr = ptr;
-
-    while addr < end_addr {
+    while addr < end {
         unsafe {
             if let Some(phys) = crate::vmm::arch::translate_addr(root_ptr as *const _, addr) {
                 if crate::vmm::arch::unmap_page(root_ptr, addr).is_ok() {
@@ -163,103 +177,3 @@ fn sys_unknown(sys_num: usize) -> usize {
     let _ = writeln!(uart, "mitosOS: Unknown syscall number: {sys_num}");
     usize::MAX
 }
-
-// =========================================================================
-// HARDWARE INITIALIZATION & ASSEMBLY ENTRY STUBS
-// =========================================================================
-
-/// Configures CPU hardware registers and model-specific registers (MSRs) 
-/// to route ring 3 syscall interrupts directly into `syscall_handler`.
-pub fn init_syscall_hardware() {
-    #[cfg(target_arch = "x86_64")]
-    unsafe {
-        const MSR_EFER: u32 = 0xC000_0080;
-        const MSR_STAR: u32 = 0xC000_0081;
-        const MSR_LSTAR: u32 = 0xC000_0082;
-        const MSR_FMASK: u32 = 0xC000_0084;
-
-        // 1. Enable System Call Extensions (SCE) in EFER
-        let efer = read_msr(MSR_EFER);
-        write_msr(MSR_EFER, efer | 1);
-
-        // 2. Setup STAR register with GDT Selectors (CS=0x08, SS=0x10, User CS=0x1B, User SS=0x23)
-        let star = ((0x0008u64) << 32) | ((0x0010u64) << 48);
-        write_msr(MSR_STAR, star);
-
-        // 3. Point LSTAR to low-level assembly trampoline
-        write_msr(MSR_LSTAR, x86_64_syscall_entry as usize as u64);
-
-        // 4. Clear Interrupt Flag (RFLAGS bit 9) upon syscall entry
-        write_msr(MSR_FMASK, 0x0200);
-    }
-
-    #[cfg(target_arch = "aarch64")]
-    {
-        // On AArch64, 'svc #0' is automatically trapped via vector_table EL0 synchronous exceptions
-    }
-}
-
-// Low-level MSR helper utilities for x86_64
-#[cfg(target_arch = "x86_64")]
-#[inline]
-unsafe fn read_msr(msr: u32) -> u64 {
-    let low: u32;
-    let high: u32;
-    core::arch::asm!(
-        "rdmsr",
-        in("ecx") msr,
-        out("eax") low,
-        out("edx") high,
-        options(nomem, nostack)
-    );
-    ((high as u64) << 32) | (low as u64)
-}
-
-#[cfg(target_arch = "x86_64")]
-#[inline]
-unsafe fn write_msr(msr: u32, val: u64) {
-    let low = val as u32;
-    let high = (val >> 32) as u32;
-    core::arch::asm!(
-        "wrmsr",
-        in("ecx") msr,
-        in("eax") low,
-        in("edx") high,
-        options(nomem, nostack)
-    );
-}
-
-// Low-level assembly trampoline for x86_64 fast syscall execution
-#[cfg(target_arch = "x86_64")]
-core::arch::global_asm!(
-    ".global x86_64_syscall_entry",
-    "x86_64_syscall_entry:",
-    "    // Preserve caller registers on kernel stack",
-    "    push r11",
-    "    push rcx",
-    "    push rbp",
-    "    push rbx",
-    "    push r12",
-    "    push r13",
-    "    push r14",
-    "    push r15",
-    "",
-    "    // Map ABI registers: RAX -> RDI (sys_num), RDI -> RSI (arg1), RSI -> RDX (arg2), RDX -> RCX (arg3)",
-    "    mov rcx, rdx",
-    "    mov rdx, rsi",
-    "    mov rsi, rdi",
-    "    mov rdi, rax",
-    "",
-    "    call syscall_handler",
-    "",
-    "    // Restore caller state and return to user mode",
-    "    pop r15",
-    "    pop r14",
-    "    pop r13",
-    "    pop r12",
-    "    pop rbx",
-    "    pop rbp",
-    "    pop rcx",
-    "    pop r11",
-    "    sysretq"
-);
