@@ -8,7 +8,7 @@ use x86_64::structures::idt::InterruptStackFrame;
 
 
 use core::ptr::{read_volatile, write_volatile};
-use core::sync::atomic::{fence, AtomicBool, Ordering};
+use core::sync::atomic::{fence, AtomicBool, AtomicU32, Ordering};
 use crate::addr::{PhysAddr, VirtAddr};
 
 // =========================================================================
@@ -17,6 +17,9 @@ use crate::addr::{PhysAddr, VirtAddr};
 
 /// Wait-queue state array for active slots (32 Command Slots per port)
 static SLOT_COMPLETION: [AtomicBool; 32] = [const { AtomicBool::new(false) }; 32];
+
+/// Software-tracked bitmask of commands currently pending execution
+static PENDING_SLOTS: AtomicU32 = AtomicU32::new(0);
 
 // =========================================================================
 // Hardware Abstraction Layer
@@ -343,6 +346,9 @@ impl AhciPort {
 
         // Reset IRQ completion tracker for this slot
         SLOT_COMPLETION[slot as usize].store(false, Ordering::SeqCst);
+        
+        // Mark slot as pending in software tracker before issuing to hardware
+        PENDING_SLOTS.fetch_or(1 << (slot as u32), Ordering::SeqCst);
 
         let table = self.cmd_table(slot);
         let prdt_count = if buf.is_empty() { 0 } else { Self::build_prdt(table, buf, hal)? };
@@ -618,9 +624,16 @@ pub extern "x86-interrupt" fn ahci_irq_handler(_frame: x86_64::structures::idt::
             let port_ci_ptr = port0_base.add(PORT_CI / 4);
             let active_slots = read_volatile(port_ci_ptr);
 
-            for slot in 0..32 {
-                if (active_slots & (1 << slot)) == 0 {
-                    SLOT_COMPLETION[slot].store(true, Ordering::Release);
+            // Safely determine completion by comparing software-pending state against hardware PORT_CI
+            let pending = PENDING_SLOTS.load(Ordering::Acquire);
+            let completed = pending & !active_slots;
+            
+            if completed != 0 {
+                PENDING_SLOTS.fetch_and(!completed, Ordering::Release);
+                for slot in 0..32 {
+                    if (completed & (1 << slot)) != 0 {
+                        SLOT_COMPLETION[slot].store(true, Ordering::Release);
+                    }
                 }
             }
         }
@@ -653,9 +666,16 @@ pub extern "C" fn ahci_irq_handler() {
             let port_ci_ptr = port0_base.add(PORT_CI / 4);
             let active_slots = read_volatile(port_ci_ptr);
 
-            for slot in 0..32 {
-                if (active_slots & (1 << slot)) == 0 {
-                    SLOT_COMPLETION[slot].store(true, Ordering::Release);
+            // Safely determine completion by comparing software-pending state against hardware PORT_CI
+            let pending = PENDING_SLOTS.load(Ordering::Acquire);
+            let completed = pending & !active_slots;
+            
+            if completed != 0 {
+                PENDING_SLOTS.fetch_and(!completed, Ordering::Release);
+                for slot in 0..32 {
+                    if (completed & (1 << slot)) != 0 {
+                        SLOT_COMPLETION[slot].store(true, Ordering::Release);
+                    }
                 }
             }
         }
