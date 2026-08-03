@@ -21,8 +21,6 @@ jobs:
             qemu_flags: -M pc -m 256M -no-reboot -display none -serial stdio
             bin_name: mitosos
 
-
-  
     steps:
       - uses: actions/checkout@v4
 
@@ -100,6 +98,10 @@ jobs:
                   puts "\n> CI: Boot confirmed! Waiting 2 seconds for shell..."
                   sleep 2
               }
+              eof {
+                  puts "\n> CI: Error: QEMU exited unexpectedly (likely a triple fault)!"
+                  exit 1
+              }
               timeout {
                   puts "\n> CI: Error: Timed out waiting for kernel to boot."
                   exit 1
@@ -116,6 +118,10 @@ jobs:
                   puts "\n> CI: Expected fault detected! Test passed."
                   sleep 1
                   exit 0 
+              }
+              eof {
+                  puts "\n> CI: Error: QEMU crashed or exited unexpectedly!"
+                  exit 1
               }
               timeout {
                   puts "\n> CI: Error: Timed out waiting for ring-3 fault."
