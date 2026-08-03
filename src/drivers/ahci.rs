@@ -658,10 +658,3 @@ pub extern "C" fn ahci_irq_handler() {
         }
     }
 }
-
-
-        // Send End of Interrupt (EOI) to Local APIC
-        let lapic_eoi = 0xFFFF_8000_FEE0_00B0 as *mut u32;
-        write_volatile(lapic_eoi, 0);
-    }
-}
