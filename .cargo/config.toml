@@ -1,8 +1,22 @@
 # Configuration for x86_64 (custom bootloader — see /bootloader)
+#
+# code-model=large: the kernel is linked at the higher-half address
+# 0xFFFF800000100000 (see linker_x86.ld + bootloader/stage2.s PML4[256]
+# mapping). That address doesn't fit the sign-extended 32-bit immediates
+# the default ("small") code model uses to address statics/globals under
+# relocation-model=static, so the linker fails with:
+#   relocation R_X86_64_32S out of range
+# "large" makes LLVM address every static with a full 64-bit immediate
+# (movabs) instead, which is valid at any address and needs no runtime
+# fixups -- safe to combine with a static (non-PIC) link and our flat
+# `OUTPUT_FORMAT(binary)` image, which has no relocation-processing loader.
+# Cost is a few extra bytes per global access; negligible for a kernel
+# this size and it does not touch the bootloader's page tables.
 [target.x86_64-unknown-none]
 rustflags = [
     "-C", "link-arg=-Tlinker_x86.ld",
     "-C", "relocation-model=static",
+    "-C", "code-model=large",
 ]
 
 # Configuration for Raspberry Pi (AArch64)
