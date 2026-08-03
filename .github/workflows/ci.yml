@@ -77,7 +77,7 @@ jobs:
             TIMEOUT_SEC=180
             CRASH_MSG="Unhandled AArch64 exception: Illegal Instruction (undefined at current Exception Level)"
           else
-            BOOT_ARGS="-drive format=raw,file=disk.img,if=ide -device ahci,id=ahci0"
+             BOOT_ARGS="-device ahci,id=ahci0 -drive id=os_disk,file=disk.img,format=raw,if=none -device ide-hd,drive=os_disk,bus=ahci0.0"
             TIMEOUT_SEC=45
             CRASH_MSG="General Protection Fault"
           fi
