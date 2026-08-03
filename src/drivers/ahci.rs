@@ -595,8 +595,9 @@ impl AhciController {
     pub fn iter_ports(&self) -> impl Iterator<Item = &AhciPort> { self.ports.iter().filter_map(|p| p.as_ref()) }
 }
 
-/// Global Top-Level AHCI Interrupt Handler (Registered in IDT)
-#[no_mangle]
+/// Global Top-Level AHCI Interrupt Handler for x86_64 (Registered in IDT)
+#[cfg(target_arch = "x86_64")]
+#[unsafe(no_mangle)]
 pub extern "x86-interrupt" fn ahci_irq_handler() {
     let ahci_base = 0xFFFF_8000_4000_0000 as *mut u32; // Active HBA MMIO Higher-Half Base
     
@@ -621,6 +622,43 @@ pub extern "x86-interrupt" fn ahci_irq_handler() {
                 }
             }
         }
+
+        // Send End of Interrupt (EOI) to Local APIC
+        let lapic_eoi = 0xFFFF_8000_FEE0_00B0 as *mut u32;
+        write_volatile(lapic_eoi, 0);
+    }
+}
+
+/// Global Top-Level AHCI Interrupt Handler for AArch64 (GIC / Standard C ABI)
+#[cfg(target_arch = "aarch64")]
+#[unsafe(no_mangle)]
+pub extern "C" fn ahci_irq_handler() {
+    // AArch64 GIC IRQ handling logic
+    let ahci_base = 0xFFFF_8000_4000_0000 as *mut u32;
+
+    unsafe {
+        let is_ptr = ahci_base.add(HBA_IS / 4);
+        let active_ports = read_volatile(is_ptr);
+
+        if active_ports & 1 != 0 {
+            let port0_base = ahci_base.add(0x100 / 4);
+            let port_is_ptr = port0_base.add(PORT_IS / 4);
+            let interrupt_status = read_volatile(port_is_ptr);
+
+            write_volatile(port_is_ptr, interrupt_status);
+
+            let port_ci_ptr = port0_base.add(PORT_CI / 4);
+            let active_slots = read_volatile(port_ci_ptr);
+
+            for slot in 0..32 {
+                if (active_slots & (1 << slot)) == 0 {
+                    SLOT_COMPLETION[slot].store(true, Ordering::Release);
+                }
+            }
+        }
+    }
+}
+
 
         // Send End of Interrupt (EOI) to Local APIC
         let lapic_eoi = 0xFFFF_8000_FEE0_00B0 as *mut u32;
