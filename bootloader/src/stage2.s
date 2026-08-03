@@ -176,13 +176,13 @@ long_mode_start:
     mov gs, ax
     mov ss, ax
 
-    ; Relocate Stack Pointer (RSP) to Higher-Half
-    mov rax, 0xFFFF_8000_000A_0000
+    ; Relocate Stack Pointer (RSP) to Higher-Half Safe RAM (Physical 0x300000)
+    mov rax, 0xFFFF_8000_0030_0000
     mov rsp, rax
 
     ; Jump to Kernel in Higher-Half space
     mov rax, higher_half_entry
-    mov rbx, 0xFFFF800000000000         ; Apply the higher-half offset
+    mov rbx, 0xFFFF800000000000
     or rax, rbx
     jmp rax
 
@@ -222,7 +222,7 @@ gdt_code64:
     dw 0xffff
     dw 0x0
     db 0x0
-    db 10011010b     
+    db 10010010b     
     db 10101111b     
     db 0x0
 gdt_end:
