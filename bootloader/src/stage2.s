@@ -182,6 +182,8 @@ long_mode_start:
 
     ; Jump to Kernel in Higher-Half space
     mov rax, higher_half_entry
+    mov rbx, 0xFFFF800000000000         ; Apply the higher-half offset
+    or rax, rbx
     jmp rax
 
 higher_half_entry:
