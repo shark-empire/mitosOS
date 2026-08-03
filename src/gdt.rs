@@ -236,6 +236,18 @@ pub fn set_kernel_stack(stack_top: u64) {
 /// user-accessible** in the currently-loaded page table (see
 /// `vmm::MapFlags`) -- this function only performs the privilege
 /// transition itself, it doesn't map anything.
+///
+/// Not currently called: `task::spawn_from_elf` reaches ring 3 through
+/// `Task::init`'s context-frame + scheduler `iretq` path instead (see
+/// its doc comment), so a process's first entry into ring 3 goes
+/// through the same generic restore path as every later context
+/// switch, rather than a separate one-shot jump. Kept, `unsafe fn` and
+/// unwired, as this module's own doc comment already flags -- a direct
+/// jump like this is what a non-scheduler-mediated ring-3 entry would
+/// use, the same role `process.rs`'s old `enter_user_mode` used to
+/// fill before that was replaced by `task::spawn_from_elf` (see
+/// `process.rs`'s module doc comment).
+#[allow(dead_code)]
 pub unsafe fn enter_usermode(entry: usize, user_stack_top: usize) -> ! {
     unsafe {
         core::arch::asm!(
