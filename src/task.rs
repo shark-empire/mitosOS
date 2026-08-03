@@ -146,23 +146,7 @@ impl Task {
         }
     }
 
-
-
-/// Marks the current task as terminated and forces a context switch.
-/// MUST NOT return.
-pub fn terminate_current_task() -> ! {
-    // 1. Mark current task state as Dead / Terminated in your scheduler
-    // crate::scheduler::mark_current_dead();
-
-    // 2. Force an immediate context switch so the scheduler picks the next task
-    crate::task::yield_now();
-
-    // If the scheduler ever switches back to this task, something went horribly wrong
-    unreachable!("Scheduler returned to a dead task!");
-}
-
-
-
+    
     /// Initializes the stack frame, registers, and memory boundaries for a new task.
     ///
     /// `memory_root` is installed as-is -- this does *not* allocate or
