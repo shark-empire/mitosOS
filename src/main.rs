@@ -34,7 +34,6 @@ pub mod gdt;
 #[cfg(target_arch = "aarch64")]
 pub mod mmu;
 
-
 use core::fmt::Write;
 use core::panic::PanicInfo;
 use crate::memory::{protect_boot_memory, MapFlags};
@@ -52,19 +51,7 @@ const HEAP_SIZE: usize = 0xA0_000; // 640KB
 
 // AArch64's fallback "disk" (RamBlockDevice::new(2048), used below in
 // place of a real ATA/SD driver -- see the FAT32 mounting block)
-// allocates exactly 2048 * 512 = 1MiB. The old 640KB heap could never
-// satisfy that regardless of fragmentation -- a single allocation
-// larger than the entire heap fails on a freshly-initialized, totally
-// empty heap just as surely as on a full one. This was already true
-// before any MMU/EL0 work; it just never surfaced because the old
-// AArch64 CI check only grepped for the boot message, never running
-// long enough to reach this allocation.
-//
-// 8MiB leaves comfortable headroom above that 1MiB floor for
-// everything else sharing the heap (VFS/FAT32 structures, the ELF
-// read buffer in shell.rs's run command, etc.), and stays well inside
-// mmu.rs's 32MiB identity map -- bump KERNEL_IDENTITY_MAP_SIZE there
-// first if this ever needs to grow past that.
+// allocates exactly 2048 * 512 = 1MiB.
 #[cfg(target_arch = "aarch64")]
 const HEAP_SIZE: usize = 0x800_000; // 8MB
 
@@ -76,19 +63,12 @@ unsafe extern "C" {
     static _kernel_end: u8;
 }
 
-
-
-
-
 #[unsafe(no_mangle)]
 pub extern "C" fn kmain() -> ! {
     let mut uart = unsafe { uart::Uart::init() };
     // Checkpoint 0: kmain was reached at all, and the UART's own
     // register pokes (GPIO ALT function, baud divisor, FIFO enable)
-    // didn't leave it unable to transmit. If this line is missing
-    // from serial output, the hang is at or before this point --
-    // most likely still in _start/el2_to_el1/el1_entry in boot.s,
-    // before Rust code runs at all.
+    // didn't leave it unable to transmit.
     let _ = writeln!(uart, "[boot] 0: kmain reached, uart live");
 
     unsafe {
@@ -103,40 +83,22 @@ pub extern "C" fn kmain() -> ! {
 
         // 2. Install IDT/Vector table so the CPU can handle exceptions & IRQs.
         interrupts::init();
-        // Checkpoint 1: VBAR_EL1 is set, the QA7 timer IRQ is routed,
-        // and the physical timer is armed (still masked at the CPU
-        // level -- DAIF isn't cleared until step 4 below).
         let _ = writeln!(uart, "[boot] 1: interrupts::init() returned");
 
         // 3. Initialize the heap allocator subsystem.
-        // (Ensures .bss doesn't collide with 0x150_000 as kernel grows).
         memory::init_memory_subsystem(HEAP_START, HEAP_SIZE);
 
         // 3b. Reserve boot/kernel/heap memory in the frame allocator.
         // This has to happen right here, before *anything* else gets a
         // chance to call vmm_alloc_frame() -- it used to run much later
         // (after PCI scan, a demo allocation, and AHCI init), so all of
-        // those were freely handing out frames from the "reserved" range,
-        // including frame 0 itself.
+        // those were freely handing out frames from the "reserved" range.
         protect_boot_memory(&raw const _kernel_end as usize, HEAP_START, HEAP_SIZE);
-        // Checkpoint 2: heap allocator + physical frame bitmap are both
-        // initialized. mmu::init() below is the next thing to call
-        // vmm_alloc_frame() (for the root page table), so this is the
-        // last checkpoint before the identity map gets built.
         let _ = writeln!(uart, "[boot] 2: memory subsystem + protect_boot_memory done");
 
-        // 3c. Bring the MMU up (AArch64 only -- x86_64 has had paging on
-        // since the bootloader's real->protected->long mode transition,
-        // long before kmain runs). Everything after this point that
-        // touches GIC/UART MMIO or dereferences a vmm_alloc_frame()
-        // result depends on this having already run -- see mmu.rs.
+        // 3c. Bring the MMU up (AArch64 only)
         #[cfg(target_arch = "aarch64")]
         mmu::init(&mut uart);
-        // Checkpoint 3: mmu::init() actually returned control to kmain
-        // (on top of its own three internal prints -- "bring-up
-        // starting", "identity map built", "MMU enabled" -- this
-        // confirms the *return* path itself, i.e. the stack, wasn't
-        // corrupted by whatever mmu::init() just did).
         #[cfg(target_arch = "aarch64")]
         let _ = writeln!(uart, "[boot] 3: mmu::init() returned");
 
@@ -168,25 +130,16 @@ for dev in scan_pci_devices {
 let _ = writeln!(uart, "-------------------------");
     }
 
-
 // Test frame allocation during initialization
 if let Some(frame) = crate::memory::alloc_frame() {
     let _ = writeln!(uart, "Memory Manager: Allocated physical frame at 0x{:X}", frame);
 }
-
-    
-    
-
-
-
 
 // Inside src/main.rs
 #[cfg(target_arch = "x86_64")]
 {
     crate::pci::init_ahci_devices(&mut uart);
 }
-
-
 
     // --- Ramdisk & VFS Mounting ---
     let inited: Option<ramdisk::TarFileSystem> = {
@@ -208,18 +161,11 @@ if let Some(frame) = crate::memory::alloc_frame() {
         let _ = writeln!(uart, "mitosOS: WARN - No valid initrd found.");
     }
 
-    // 1. MEMORY: flags demo (actual protect_boot_memory now runs right
-    // after heap init, near the top of kmain -- see above)
-    
-        let _code = MapFlags::kernel_code();
-        let _data = MapFlags::kernel_data();
-    
+    // 1. MEMORY: flags demo
+    let _code = MapFlags::kernel_code();
+    let _data = MapFlags::kernel_data();
 
-    // 2. GRAPHICS: Initialize the screen (x86_64 only -- FB_ADDR below
-    // is the QEMU 'pc' machine's fixed VGA/Bochs LFB address, with no
-    // AArch64/Pi equivalent; a Pi framebuffer needs the mailbox
-    // property interface instead, which isn't implemented yet -- see
-    // graphics.rs).
+    // 2. GRAPHICS: Initialize the screen (x86_64 only)
     #[cfg(target_arch = "x86_64")]
     {
     const FB_ADDR: usize = 0xFD000000;
@@ -228,8 +174,7 @@ if let Some(frame) = crate::memory::alloc_frame() {
     const FB_PITCH: usize = 4096;
 
     let mut fb = unsafe {
-        // Identity-map the framebuffer's MMIO pages before anything touches
-        // them -- writing through an unmapped physical address page-faults.
+        // Identity-map the framebuffer's MMIO pages before anything touches them
         let cr3: usize;
         core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack));
         let page_table_root = cr3 & !0xFFF;
@@ -249,9 +194,6 @@ if let Some(frame) = crate::memory::alloc_frame() {
     fb.clear(Color::BLACK);
     Framebuffer::draw_boot_splash(&mut fb);
     fb.draw_string(10, 70, "mitosOS System Init...", Color::GREEN);
-    // Reflects the ramdisk mount already done above (`inited`) rather
-    // than a second, redundant TarFileSystem::new_embedded() call that
-    // used to live here just for this splash line.
     fb.draw_string(
         10, 90,
         if inited.is_some() { "Ramdisk: loaded" } else { "Ramdisk: missing" },
@@ -260,21 +202,10 @@ if let Some(frame) = crate::memory::alloc_frame() {
     }
 
     // 3. HARDWARE: Start the timer.
-    // AArch64 arms its own physical timer earlier, inside
-    // interrupts::init() -- see interrupts::init_aarch64_timer, which
-    // now calls this same timer::hardware::init() instead of
-    // duplicating its logic with a stale hardcoded interval. So this
-    // call only matters for x86_64's PIT, which has no earlier init
-    // point.
     #[cfg(target_arch = "x86_64")]
     timer::hardware::init();
 
     // --- FAT32 Mounting (RAM-backed test volume) ---
-    // A RAM-backed block device is pure software with nothing
-    // architecture-specific about it, so -- unlike the framebuffer --
-    // this runs (and gets CI-tested) on both targets now, rather than
-    // being silently unreachable on AArch64 the way it used to be when
-    // this whole section was nested inside the x86_64-only block above.
     let ram_disk: alloc::boxed::Box<dyn block::BlockDevice> =
         alloc::boxed::Box::new(block::RamBlockDevice::new(256));
 
@@ -294,43 +225,47 @@ if let Some(frame) = crate::memory::alloc_frame() {
     }
 
     // --- FAT32 Mounting (real ATA disk) ---
-    // Self-tests the drive before handing it to the FAT32 layer, then mounts
-    // gracefully -- disk.img in CI is the raw bootable image, not a FAT32
-    // volume, so failure here is the expected path, not a panic.
     #[cfg(target_arch = "aarch64")]
-    let block_device: Box<dyn crate::block::BlockDevice> = Box::new(crate::block::RamBlockDevice::new(2048));
+    let block_device: Option<Box<dyn crate::block::BlockDevice>> = Some(Box::new(crate::block::RamBlockDevice::new(2048)));
 
     #[cfg(target_arch = "x86_64")]
-    let block_device: Box<dyn crate::block::BlockDevice> = {
-        let mut ata_device = crate::fs::ata::AtaDevice::new().expect("Failed to init ATA");
-        match ata_device.self_test() {
-            Ok(()) => {
-                let _ = writeln!(uart, "mitosOS: ATA self-test passed ({} sectors)", ata_device.total_sectors);
+    let block_device: Option<Box<dyn crate::block::BlockDevice>> = {
+        match crate::fs::ata::AtaDevice::new() {
+            Ok(mut ata_device) => {
+                match ata_device.self_test() {
+                    Ok(()) => {
+                        let _ = writeln!(uart, "mitosOS: ATA self-test passed ({} sectors)", ata_device.total_sectors);
+                    }
+                    Err(e) => {
+                        let _ = writeln!(uart, "mitosOS: ATA self-test FAILED: {e}");
+                    }
+                }
+                Some(Box::new(ata_device))
             }
             Err(e) => {
-                let _ = writeln!(uart, "mitosOS: ATA self-test FAILED: {e}");
+                let _ = writeln!(uart, "mitosOS: Legacy ATA not found ({:?}), skipping.", e);
+                None
             }
         }
-        Box::new(ata_device)
     };
 
-    match crate::fs::fat32::Fat32FileSystem::mount(block_device) {
-        Ok(mut fat32_fs) => match fat32_fs.read_file_by_path("/test.txt") {
-            Ok(content) => {
-                let _ = writeln!(uart, "mitosOS: /test.txt on ATA disk: {} bytes", content.len());
-            }
+    if let Some(dev) = block_device {
+        match crate::fs::fat32::Fat32FileSystem::mount(dev) {
+            Ok(mut fat32_fs) => match fat32_fs.read_file_by_path("/test.txt") {
+                Ok(content) => {
+                    let _ = writeln!(uart, "mitosOS: /test.txt on ATA disk: {} bytes", content.len());
+                }
+                Err(e) => {
+                    let _ = writeln!(uart, "mitosOS: ATA /test.txt read skipped ({e})");
+                }
+            },
             Err(e) => {
-                let _ = writeln!(uart, "mitosOS: ATA /test.txt read skipped ({e})");
+                let _ = writeln!(uart, "mitosOS: ATA FAT32 mount skipped ({e})");
             }
-        },
-        Err(e) => {
-            let _ = writeln!(uart, "mitosOS: ATA FAT32 mount skipped ({e})");
         }
     }
 
-
-
-    // --- Spawn Background Worker Task ---
+    // --- Spawn Background Worker Tasks ---
     crate::task::spawn(background_worker, crate::task::ExecutionMode::SharedThread, 0);
     crate::task::spawn(background_worker_2, crate::task::ExecutionMode::SharedThread, 0);
 
@@ -341,7 +276,6 @@ if let Some(frame) = crate::memory::alloc_frame() {
 /// Background worker task demonstrating preemptive task execution
 extern "C" fn background_worker() -> ! {
     loop {
-        // Yield voluntarily or let the hardware timer interrupt switch tasks
         crate::task::yield_now();
     }
 }
@@ -366,7 +300,6 @@ fn park() -> ! {
     }
 }
 
-// Add this function anywhere in src/main.rs
 extern "C" fn background_worker_2() -> ! {
     loop {
         let mut uart = crate::uart::Uart::shared();
