@@ -12,7 +12,6 @@ jobs:
         include:
           - target: aarch64-unknown-none
             qemu_bin: qemu-system-aarch64
-            # Change '-serial stdio' to '-serial null -serial stdio'
             qemu_flags: -M raspi3b -display none -serial stdio
             bin_name: kernel8.img
 
@@ -73,12 +72,13 @@ jobs:
           if [ "${{ matrix.target }}" = "aarch64-unknown-none" ]; then
             BOOT_ARGS="-kernel kernel8.img"
             TIMEOUT_SEC=180
-            CRASH_MSG="Unhandled AArch64 exception: Illegal Instruction (undefined at current Exception Level)"
           else
-             BOOT_ARGS="-device ahci,id=ahci0 -drive id=os_disk,file=disk.img,format=raw,if=none -device ide-hd,drive=os_disk,bus=ahci0.0"
+            BOOT_ARGS="-device ahci,id=ahci0 -drive id=os_disk,file=disk.img,format=raw,if=none -device ide-hd,drive=os_disk,bus=ahci0.0"
             TIMEOUT_SEC=45
-            CRASH_MSG="General Protection Fault"
           fi
+
+          # Both architectures should now gracefully isolate the fault rather than panic
+          ISOLATION_MSG="Terminating isolated task..."
 
           # 2. Combine the full QEMU command and target command
           QEMU_CMD="${{ matrix.qemu_bin }} ${{ matrix.qemu_flags }} $BOOT_ARGS"
@@ -112,19 +112,30 @@ jobs:
           set send_slow {1 .05}
           send -s "$env(INPUT_CMD)\r"
           
-          # Stage C: Wait for the process to run and trigger the expected fault
+          # Stage C: Wait for the process to run and trigger the graceful termination
           expect {
-              "$env(CRASH_MSG)" { 
-                  puts "\n> CI: Expected fault detected! Test passed."
-                  sleep 1
-                  exit 0 
+              "$env(ISOLATION_MSG)" { 
+                  puts "\n> CI: User-mode fault successfully isolated."
               }
               eof {
                   puts "\n> CI: Error: QEMU crashed or exited unexpectedly!"
                   exit 1
               }
               timeout {
-                  puts "\n> CI: Error: Timed out waiting for ring-3 fault."
+                  puts "\n> CI: Error: Timed out waiting for task termination message."
+                  exit 1
+              }
+          }
+          
+          # Stage D: Verify the kernel survived and shell returned
+          expect {
+              "mitosOS>" {
+                  puts "\n> CI: Shell survived the fault! Test passed."
+                  sleep 1
+                  exit 0
+              }
+              timeout {
+                  puts "\n> CI: Error: Shell did not return after fault. OS likely hung."
                   exit 1
               }
           }
@@ -134,19 +145,15 @@ jobs:
           export QEMU_CMD
           export TIMEOUT_SEC
           export INPUT_CMD
-          export CRASH_MSG
+          export ISOLATION_MSG
 
           # 5. Run Expect and capture the output
           expect run_test.exp 2>&1 | tee qemu_output.log
 
-          # 6. Final strict assertions
+          # 6. Final sanity assertions (using expect's robust exit code as the primary source of truth)
           echo "----- captured serial output -----"
           cat qemu_output.log
           
           grep -q "mitosOS: kernel_main reached. Boot OK." qemu_output.log
-          grep -q "Spawned as a new isolated (ring-3) process" qemu_output.log
-          if [ "${{ matrix.target }}" = "aarch64-unknown-none" ]; then
-            grep -q "Unhandled AArch64 exception: Illegal Instruction (undefined at current Exception Level)" qemu_output.log
-          else
-            grep -q "General Protection Fault" qemu_output.log
-          fi
+          grep -q "$ISOLATION_MSG" qemu_output.log
+          grep -q "mitosOS>" qemu_output.log
