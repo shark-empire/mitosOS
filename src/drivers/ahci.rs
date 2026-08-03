@@ -3,7 +3,7 @@
 //! Implements AHCI 1.3.1 with interrupt-driven DMA completion, 
 //! BIOS/OS handoff, port enumeration, and 48-bit LBA sector reads/writes.
 
-#![allow(dead_code)]
+
 
 use core::ptr::{read_volatile, write_volatile};
 use core::sync::atomic::{fence, AtomicBool, Ordering};
