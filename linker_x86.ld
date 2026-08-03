@@ -1,30 +1,33 @@
 OUTPUT_FORMAT(binary)
 ENTRY(_start)
 
-SECTIONS {
+SECTIONS
+{
     /* Link the kernel in the Higher-Half virtual address space */
     . = 0xFFFF800000100000;
 
-    .text : ALIGN(4K) {
+    .text : {
+        KEEP(*(.text.boot))
         *(.text .text.*)
     }
 
-    .rodata : ALIGN(4K) {
+    .rodata : {
         *(.rodata .rodata.*)
     }
 
-    .data : ALIGN(4K) {
+    .data : {
         *(.data .data.*)
     }
 
-    .bss : ALIGN(4K) {
+    .bss (NOLOAD) : ALIGN(16) {
+        __bss_start = .;
         *(.bss .bss.*)
         *(COMMON)
+        . = ALIGN(8);
+        __bss_end = .;
     }
 
     _kernel_end = .;
-
-
 
     /DISCARD/ : {
         *(.comment)
