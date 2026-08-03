@@ -97,6 +97,7 @@ pub extern "C" fn kmain() -> ! {
         //    IST1, which this sets up.
         #[cfg(target_arch = "x86_64")]
         gdt::init();
+        #[cfg(target_arch = "x86_64")]
         hal::init();
 
         // 2. Install IDT/Vector table so the CPU can handle exceptions & IRQs.
