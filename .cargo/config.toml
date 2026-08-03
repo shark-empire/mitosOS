@@ -14,6 +14,7 @@
 # this size and it does not touch the bootloader's page tables.
 [target.x86_64-unknown-none]
 rustflags = [
+    "-C", "code-model=kernel",
     "-C", "link-arg=-Tlinker_x86.ld",
     "-C", "relocation-model=static",
     "-C", "code-model=large",
