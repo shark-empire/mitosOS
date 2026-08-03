@@ -156,30 +156,40 @@ mod imp {
     /// fault recovery yet (same limitation as EL1), so this is fatal
     /// to the whole kernel, matching x86_64's current sophistication
     /// (a #GP from ring 3 is equally fatal there today).
-#[unsafe(no_mangle)]
-pub extern "C" fn handle_el0_sync_trap(
-    esr: u64,
-    far: u64,
-    elr: u64,
-    sysno: u64,
-    a0: u64,
-    a1: u64,
-    a2: u64,
-) -> u64 {
-    let ec = (esr >> 26) & 0x3F;
+    #[unsafe(no_mangle)]
+    pub extern "C" fn handle_el0_sync_trap(
+        esr: u64,
+        far: u64,
+        elr: u64,
+        sysno: u64,
+        a0: u64,
+        a1: u64,
+        a2: u64,
+    ) -> u64 {
+        let ec = (esr >> 26) & 0x3F;
 
-    if ec == 0x15 {
-        crate::syscall::syscall_handler(
-            sysno as usize,
-            a0 as usize,
-            a1 as usize,
-            a2 as usize,
-        ) as u64
-    } else {
-        handle_el1_sync_exception(esr, far, elr);
-        0
+        if ec == 0x15 {
+            // Real system call from EL0
+            crate::syscall::syscall_handler(
+                sysno as usize,
+                a0 as usize,
+                a1 as usize,
+                a2 as usize,
+            ) as u64
+        } else {
+            // User-mode fault: Terminate process, keep kernel alive!
+            use core::fmt::Write;
+            let mut uart = crate::uart::Uart::shared();
+            let _ = writeln!(
+                uart,
+                "\r\n[OS] User process faulted (EC=0x{ec:02x}) at ELR 0x{elr:016x}"
+            );
+            let _ = writeln!(uart, "[OS] Terminating isolated task...");
+
+            crate::task::terminate_current_task();
+        }
     }
-}
+
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -423,42 +433,49 @@ mod imp {
     /// one (8, 13, 14, ...), or 0 for vectors that don't (0, 6) -- the
     /// calling stub pushes a dummy 0 so the stack layout -- and therefore
     /// this function's view of it -- is uniform either way.
-#[unsafe(no_mangle)]
-pub extern "C" fn fault_common_handler(vector: u64, error_code: u64, rip: u64) {
-    let name = match vector {
-        0 => "Divide Error (#DE)",
-        6 => "Invalid Opcode (#UD)",
-        8 => "Double Fault (#DF)",
-        13 => "General Protection Fault (#GP)",
-        14 => "Page Fault (#PF)",
-        _ => "Unhandled Exception",
-    };
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fault_common_handler(vector: u64, error_code: u64, rip: u64) {
+        let name = match vector {
+            0 => "Divide Error (#DE)",
+            6 => "Invalid Opcode (#UD)",
+            8 => "Double Fault (#DF)",
+            13 => "General Protection Fault (#GP)",
+            14 => "Page Fault (#PF)",
+            _ => "Unhandled Exception",
+        };
 
-    if vector == 14 {
-        let cr2: usize;
-        unsafe {
-            core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack));
-        }
-        let present = error_code & 1 != 0;
-        let user = error_code & (1 << 2) != 0;
-        
-        if crate::vmm::handle_page_fault(cr2, present, user) {
-            return;
+        if vector == 14 {
+            let cr2: usize;
+            unsafe {
+                core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack));
+            }
+            let present = error_code & 1 != 0;
+            let user = error_code & (1 << 2) != 0;
+
+            if crate::vmm::handle_page_fault(cr2, present, user) {
+                return;
+            }
         }
 
-        let write = error_code & (1 << 1) != 0;
-        let mut uart = crate::uart::Uart::shared();
-        let _ = core::fmt::write(&mut uart, format_args!(
-            "\r\n!!! CPU EXCEPTION: {} (vector {}) !!!\r\n    fault address (CR2) = 0x{:x} [{}, {}, {}]\r\n",
-            name, vector, cr2,
-            if present { "protection violation" } else { "page not present" },
-            if write { "write" } else { "read" },
-            if user { "user-mode" } else { "supervisor" },
-        ));
+        // Check if the fault came from User Space (Ring 3 address or User-bit)
+        let is_user_fault = (error_code & (1 << 2) != 0) || (rip >= 0x8000000000);
+
+        if is_user_fault && vector != 8 {
+            use core::fmt::Write;
+            let mut uart = crate::uart::Uart::shared();
+            let _ = writeln!(
+                uart,
+                "\r\n[OS] User process triggered {} (vector {}) at RIP: 0x{:x}",
+                name, vector, rip
+            );
+            let _ = writeln!(uart, "[OS] Terminating isolated task...");
+
+            crate::task::terminate_current_task();
+        }
+
+        // Kernel-mode fault: system halt
+        panic!("Unhandled CPU exception: {name} at RIP: 0x{rip:x}");
     }
-
-    panic!("Unhandled CPU exception: {name} at RIP: 0x{rip:x}");
-}
 
 }
 
