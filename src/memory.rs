@@ -360,6 +360,14 @@ pub unsafe fn protect_boot_memory(kernel_end_addr: usize, heap_start: usize, hea
     if heap_end_frame > heap_start_frame {
         pmm.reserve_range(heap_start_frame, heap_end_frame - heap_start_frame);
     }
+
+    // UPGRADE: Protect the Ramdisk loaded by stage2.s at 2MB (0x200000)
+    // Stage2 loads up to 128KB of ramdisk data (256 sectors).
+    // Without this, the physical frame allocator hands out the ramdisk 
+    // memory to other processes, zeroing out the TAR filesystem headers.
+    let ramdisk_start_frame = 0x200000 / PAGE_SIZE;
+    let ramdisk_frames = 256 * 512 / PAGE_SIZE;
+    pmm.reserve_range(ramdisk_start_frame, ramdisk_frames);
 }
 
 /// Explicit initialization entry point
