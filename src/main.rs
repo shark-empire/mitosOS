@@ -26,6 +26,8 @@ pub mod version;
 pub mod addr;
 #[cfg(target_arch = "x86_64")]
 pub mod pci;
+#[cfg(target_arch = "x86_64")] 
+pub mod hal;
 #[cfg(target_arch = "x86_64")]
 pub mod gdt;
 #[cfg(target_arch = "aarch64")]
@@ -95,6 +97,7 @@ pub extern "C" fn kmain() -> ! {
         //    IST1, which this sets up.
         #[cfg(target_arch = "x86_64")]
         gdt::init();
+        hal::init();
 
         // 2. Install IDT/Vector table so the CPU can handle exceptions & IRQs.
         interrupts::init();
