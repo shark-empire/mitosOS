@@ -229,7 +229,7 @@ gdt_code64:
     dw 0xffff
     dw 0x0
     db 0x0
-    db 10010010b     
+    db 10011010b     
     db 10101111b     
     db 0x0
 gdt_end:
