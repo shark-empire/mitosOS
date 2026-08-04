@@ -396,3 +396,6 @@ gdt_descriptor64:
 CODE_SEG   equ gdt_code   - gdt_start
 DATA_SEG   equ gdt_data   - gdt_start
 CODE64_SEG equ gdt_code64 - gdt_start
+
+; --- Pad stage2 to exactly 32KB (64 sectors) so the kernel starts at LBA 65 ---
+times 32768 - ($ - $$) db 0
