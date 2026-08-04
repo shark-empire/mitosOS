@@ -308,7 +308,21 @@ long_mode_start:
     jmp rax
 
 higher_half_entry:
-    ; Unmap lower-half identity mapping (PML4[0])
+    ; 1. Reload GDTR with higher-half virtual address BEFORE unmapping lower half
+    mov rax, gdt_descriptor64
+    mov rbx, 0xFFFF800000000000
+    or rax, rbx
+    lgdt [rax]
+
+    ; Reload segment selectors with higher-half GDT active
+    mov ax, DATA_SEG
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
+    mov ss, ax
+
+    ; 2. Safely unmap lower-half identity mapping (PML4[0])
     mov rax, 0xFFFF_8000_0000_1000      
     mov qword [rax], 0                  
 
@@ -316,15 +330,15 @@ higher_half_entry:
     mov rax, cr3
     mov cr3, rax
 
-    ; --- ADD THIS: Enable SSE & FPU for Rust ---
+    ; 3. Enable SSE & FPU for Rust using full 64-bit register operations
     mov rax, cr0
-    and ax, 0xFFFB      ; Clear Coprocessor Emulation (CR0.EM)
-    or ax, 0x0002       ; Set Coprocessor Monitoring (CR0.MP)
+    and rax, ~(1 << 2)  ; Clear Coprocessor Emulation (CR0.EM)
+    or rax, (1 << 1)    ; Set Coprocessor Monitoring (CR0.MP)
     mov cr0, rax
+
     mov rax, cr4
-    or ax, 3 << 9       ; Set CR4.OSFXSR and CR4.OSXMMEXCPT
+    or rax, (3 << 9)    ; Set CR4.OSFXSR (bit 9) and CR4.OSXMMEXCPT (bit 10)
     mov cr4, rax
-    ; -------------------------------------------
 
     ; --- Boot checkpoint 'U' ---
     push rax
@@ -334,6 +348,9 @@ higher_half_entry:
     out dx, al
     pop rdx
     pop rax
+
+    ; 4. Align stack to satisfy System V AMD64 ABI on function entry
+    sub rsp, 8
 
     ; Jump to Rust kernel main
     mov rax, KERNEL_VIRT_LOAD_ADDR
@@ -371,6 +388,10 @@ gdt_end:
 gdt_descriptor:
     dw gdt_end - gdt_start - 1
     dd gdt_start
+
+gdt_descriptor64:
+    dw gdt_end - gdt_start - 1
+    dq 0xFFFF800000000000 + gdt_start
 
 CODE_SEG   equ gdt_code   - gdt_start
 DATA_SEG   equ gdt_data   - gdt_start
