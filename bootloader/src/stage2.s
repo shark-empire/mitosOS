@@ -37,6 +37,7 @@ _start:
     mov cx, KERNEL_TOTAL_SECTORS / KERNEL_CHUNK_SECTORS
 .read_kernel_loop:
     push cx
+    mov word [disk_dap + 2], KERNEL_CHUNK_SECTORS ; Re-init count (BIOS can overwrite)
     mov si, disk_dap
     mov ah, 0x42
     mov dl, [0x0500]               ; boot drive, stashed by stage1
@@ -55,9 +56,11 @@ _start:
     ; 2. Load the RAMDISK into 0x70000
     mov cx, RAMDISK_TOTAL_SECTORS / KERNEL_CHUNK_SECTORS
     mov dword [disk_dap + 8], RAMDISK_START_LBA
+    mov dword [disk_dap + 12], 0
     mov word [disk_dap + 6], RAMDISK_TEMP_SEGMENT
 .read_ramdisk_loop:
     push cx
+    mov word [disk_dap + 2], KERNEL_CHUNK_SECTORS
     mov si, disk_dap
     mov ah, 0x42
     mov dl, [0x0500]
@@ -72,12 +75,12 @@ _start:
     jmp .done_reading
 
 .ramdisk_missing:
-    pop cx                         ; Clean the stack
+    pop cx                         ; Clean stack frame for failed loop iteration
 
 .done_reading:
     cli                            
 
-    ; --- Boot checkpoint: ramdisk phase done (loaded or gracefully skipped) ---
+    ; --- Boot checkpoint: ramdisk phase done ---
     call print_r
 
     ; Enable A20 Line
@@ -90,13 +93,12 @@ _start:
     or eax, 1
     mov cr0, eax
 
-    ; --- Boot checkpoint: A20 + GDT done, about to enter protected mode ---
+    ; --- Boot checkpoint: A20 + GDT done ---
     call print_d
 
     jmp CODE_SEG:protected_mode_start
 
 disk_error:
-    ; Print 'E' to COM1 serial port for CI/CD debugging
     mov dx, 0x3f8
     mov al, 'E'
     out dx, al
@@ -104,7 +106,6 @@ disk_error:
     hlt
     jmp $
 
-; --- Minimal serial checkpoint helpers (COM1, port 0x3f8), 16-bit part ---
 print_2:
     push ax
     push dx
@@ -156,7 +157,19 @@ disk_dap:
 
 [bits 32]
 protected_mode_start:
-    ; --- Boot checkpoint: protected mode entered (far jump worked) ---
+    mov ax, DATA_SEG
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
+    mov ss, ax
+    
+    ; FIX: Move stack to 0x9F000 instead of 0x90000.
+    ; Ramdisk buffer spans 0x70000-0x8FFFF. Pushing onto stack at 0x90000 
+    ; grows downwards into 0x8FFFF and corrupts the ramdisk data!
+    mov esp, 0x9F000
+
+    ; --- Boot checkpoint: protected mode entered ---
     push eax
     push edx
     mov dx, 0x3f8
@@ -164,14 +177,6 @@ protected_mode_start:
     out dx, al
     pop edx
     pop eax
-
-    mov ax, DATA_SEG
-    mov ds, ax
-    mov es, ax
-    mov fs, ax
-    mov gs, ax
-    mov ss, ax
-    mov esp, 0x90000
 
     ; Copy KERNEL from temp real-mode buffer to 1MB physical
     mov esi, (KERNEL_TEMP_SEGMENT * 16) + KERNEL_TEMP_OFFSET
@@ -187,7 +192,7 @@ protected_mode_start:
     cld
     rep movsd
 
-    ; --- Boot checkpoint: kernel + ramdisk copied to final physical addresses ---
+    ; --- Boot checkpoint: kernel + ramdisk copied ---
     push eax
     push edx
     mov dx, 0x3f8
@@ -196,8 +201,7 @@ protected_mode_start:
     pop edx
     pop eax
 
-    ; --- Build Page Tables: Higher-Half & Full 1GB Identity Mappings ---
-    ; Zero 4 pages (PML4 @ 0x1000, PDPT @ 0x2000, PD @ 0x3000, Extra @ 0x4000)
+    ; --- Build Page Tables ---
     mov edi, 0x1000          
     mov ecx, 4096            
     xor eax, eax
@@ -205,13 +209,13 @@ protected_mode_start:
 
     ; Link PML4[0] (Temporary lower-half identity) -> PDPT (0x2000)
     mov dword [0x1000], 0x2003
-    ; Link PML4[256] (Higher-half 0xFFFF_8000_0000_0000) -> PDPT (0x2000)
+    ; Link PML4[256] (Higher-half) -> PDPT (0x2000)
     mov dword [0x1000 + HIGHER_HALF_PML4_IDX * 8], 0x2003
 
     ; Link PDPT[0] -> PD (0x3000)
     mov dword [0x2000], 0x3003
     
-    ; Populate 512 entries in PD = 512 x 2MB = 1GB Physical RAM & MMIO Mapped!
+    ; Populate 512 entries in PD = 1GB Physical RAM (2MB Huge Pages)
     mov edi, 0x3000
     mov eax, 0x83                ; Present + Writable + PageSize (2MB Huge)
     mov ecx, 512
@@ -247,12 +251,6 @@ protected_mode_start:
     or eax, 0x800               ; EFER.NXE (No-Execute Enable)
     wrmsr
 
-    ; Enable Paging in CR0 (Activates Long Mode)
-    mov eax, cr0
-    and eax, ~(1 << 2)
-    or eax, (1 << 1)           
-    mov cr0, eax
-
     ; --- Boot checkpoint: paging enabled, about to enter long mode ---
     push eax
     push edx
@@ -262,11 +260,19 @@ protected_mode_start:
     pop edx
     pop eax
 
+    ; FIX: Set CR0.PG (Bit 31) to activate Paging & Long Mode!
+    ; Previously, bit 31 was omitted, causing execution to remain in 32-bit mode
+    ; and faulting on the far jump to 64-bit code space.
+    mov eax, cr0
+    and eax, ~(1 << 2)          ; Clear EM
+    or eax, (1 << 1) | (1 << 31) ; Set MP and PG (Paging Enable)
+    mov cr0, eax
+
     jmp CODE64_SEG:long_mode_start
 
 [bits 64]
 long_mode_start:
-    ; --- Boot checkpoint: long mode entered (far jump into 64-bit worked) ---
+    ; --- Boot checkpoint: long mode entered ---
     push rax
     push rdx
     mov dx, 0x3f8
@@ -282,11 +288,11 @@ long_mode_start:
     mov gs, ax
     mov ss, ax
 
-    ; Relocate Stack Pointer (RSP) to Higher-Half Safe RAM (Physical 0x300000)
+    ; Relocate Stack Pointer (RSP) to Higher-Half Safe RAM
     mov rax, 0xFFFF_8000_0030_0000
     mov rsp, rax
 
-    ; --- Boot checkpoint: about to jump into the higher-half alias ---
+    ; --- Boot checkpoint: jumping to higher-half alias ---
     push rax
     push rdx
     mov dx, 0x3f8
@@ -310,9 +316,7 @@ higher_half_entry:
     mov rax, cr3
     mov cr3, rax
 
-    ; --- Boot checkpoint: last one before handing off to the Rust kernel.
-    ; If this is the last letter you ever see, the fault is in
-    ; boot_x86.s's _start (BSS zero or the jump itself), not here. ---
+    ; --- Boot checkpoint 'U' ---
     push rax
     push rdx
     mov dx, 0x3f8
