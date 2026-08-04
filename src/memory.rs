@@ -395,34 +395,42 @@ pub unsafe fn create_process_page_table() -> Option<usize> {
         let new_root = root_frame as *mut u64;
         
         unsafe { 
-            // This kernel has no higher-half split: it's identity-mapped
-            // starting at 0x100000, and ELF segments load around
-            // 0x400000+ -- everything lives in the LOW half of the
-            // address space (PML4 entries 0..256), not 256..512. This
-            // used to copy 256..512, which is empty here, leaving a
-            // freshly spawned process's page table with *nothing* mapped
-            // -- the instant the scheduler switched CR3 to it, the very
-            // next instruction fetch (still running kernel code, at a
-            // low-half address) had nowhere to translate through and
-            // would fault immediately.
+            // The kernel is higher-half (see bootloader/src/stage2.s,
+            // KERNEL_VIRT_LOAD_ADDR = 0xFFFF_8000_0010_0000): its code,
+            // data and any runtime physical/MMIO mappings (e.g. the
+            // framebuffer identity-map in main.rs) live at PML4 index
+            // 256, not in the low half. The low half (index 0) also
+            // gets used transiently by the bootloader, and nothing
+            // else besides the kernel populates any other index at
+            // boot time. So copying the *entire* 512-entry table here
+            // is equivalent to hand-picking {0, 256} today, and it
+            // keeps working automatically if the kernel ever maps
+            // something at a different high index later -- without
+            // this, a freshly spawned process's page table would have
+            // nothing mapped at 256, and the instant the scheduler
+            // switched CR3 to it, the very next instruction fetch
+            // (still running kernel code, at a higher-half address)
+            // would have nowhere to translate through and would fault
+            // immediately.
             //
             // Note: this shares the underlying page-table structures
             // with the parent, not just the mappings -- by itself that
             // would let two processes (or a process and the kernel)
             // step on each other by both extending the same shared PD
             // entry for their own private mappings. What actually
-            // prevents that: PML4 entries 0..256 only ever have entry 0
-            // populated (everything the kernel maps -- identity range,
-            // MMIO -- fits inside the first 512GB), and every process's
-            // *private* mappings are required to live at
-            // memory::USER_SPACE_BASE or above (entry 1+, see its doc
-            // comment and elf.rs's segment validation), which starts
-            // out unpopulated in this copy. The first private mapping
-            // any process makes forces its own fresh PDPT/PD/PT chain,
-            // not a walk into the shared one -- the sharing here is
-            // real but confined entirely to entry 0, which nothing
-            // process-private is allowed to touch.
-            for i in 0..256 {
+            // prevents that: every index this loop copies is either
+            // populated only by the kernel (0, 256) or, for every
+            // index in between, is still completely empty at this
+            // point (nothing has ever mapped anything there) -- and
+            // every process's *private* mappings are required to live
+            // at memory::USER_SPACE_BASE or above (index 1, see its
+            // doc comment and elf.rs's segment validation), which
+            // starts out unpopulated in this copy. The first private
+            // mapping any process makes forces its own fresh
+            // PDPT/PD/PT chain there, not a walk into a shared one --
+            // the sharing here is real but confined entirely to the
+            // indices the kernel itself already owns.
+            for i in 0..512 {
                 new_root.add(i).write(active_root.add(i).read());
             }
         }
