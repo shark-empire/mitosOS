@@ -43,7 +43,7 @@ truncate -s "$RAMDISK_MAX_BYTES" rootfs.tar
 echo "==> Building kernel ($KERNEL_TARGET)"
 cargo build --release --target "$KERNEL_TARGET"
 
-llvm-objcopy -O binary target/x86_64-mitosOS/release/kernel kernel.bin
+llvm-objcopy -O binary target/x86_64-unknown-none/release/kernel kernel.bin
 
 KERNEL_ELF=$(find "target/$KERNEL_TARGET/release" -maxdepth 1 -type f -executable ! -name "*.d" | head -n1)
 if [ -z "$KERNEL_ELF" ]; then
