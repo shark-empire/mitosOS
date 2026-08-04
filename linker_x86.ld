@@ -1,4 +1,3 @@
-OUTPUT_FORMAT(binary)
 ENTRY(_start)
 
 SECTIONS
@@ -6,24 +5,26 @@ SECTIONS
     /* Link the kernel in the Higher-Half virtual address space */
     . = 0xFFFF800000100000;
 
-    .text : {
+    /* Aligning sections to 4K (page boundaries) is vital for future memory 
+       protection and prevents SIMD unaligned memory faults */
+    .text : ALIGN(4096) {
         KEEP(*(.text.boot))
         *(.text .text.*)
     }
 
-    .rodata : {
+    .rodata : ALIGN(4096) {
         *(.rodata .rodata.*)
     }
 
-    .data : {
+    .data : ALIGN(4096) {
         *(.data .data.*)
     }
 
-    .bss (NOLOAD) : ALIGN(16) {
+    .bss (NOLOAD) : ALIGN(4096) {
         __bss_start = .;
         *(.bss .bss.*)
         *(COMMON)
-        . = ALIGN(8);
+        . = ALIGN(16);
         __bss_end = .;
     }
 
