@@ -309,12 +309,22 @@ long_mode_start:
 
 higher_half_entry:
     ; Unmap lower-half identity mapping (PML4[0])
-    mov rax, 0xFFFF_8000_0000_1000      ; Higher-half virtual address of PML4
-    mov qword [rax], 0                  ; Clear PML4 Index 0
+    mov rax, 0xFFFF_8000_0000_1000      
+    mov qword [rax], 0                  
 
     ; Flush TLB
     mov rax, cr3
     mov cr3, rax
+
+    ; --- ADD THIS: Enable SSE & FPU for Rust ---
+    mov rax, cr0
+    and ax, 0xFFFB      ; Clear Coprocessor Emulation (CR0.EM)
+    or ax, 0x0002       ; Set Coprocessor Monitoring (CR0.MP)
+    mov cr0, rax
+    mov rax, cr4
+    or ax, 3 << 9       ; Set CR4.OSFXSR and CR4.OSXMMEXCPT
+    mov cr4, rax
+    ; -------------------------------------------
 
     ; --- Boot checkpoint 'U' ---
     push rax
@@ -328,6 +338,7 @@ higher_half_entry:
     ; Jump to Rust kernel main
     mov rax, KERNEL_VIRT_LOAD_ADDR
     jmp rax
+
 
 align 8
 gdt_start:
