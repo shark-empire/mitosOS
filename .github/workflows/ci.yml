@@ -26,7 +26,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          export DEBIAN_FRONTEND=noninteractive
+          echo 'Acquire::ForceIPv4 "true";' | sudo tee /etc/apt/apt.conf.d/99force-ipv4
+          export DEBIAN_FRONTEND=noninteractive Yoo
           sudo apt-get update
           sudo apt-get install -y qemu-system-arm qemu-system-x86 gcc-aarch64-linux-gnu nasm expect
 
