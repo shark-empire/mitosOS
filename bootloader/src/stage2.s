@@ -30,6 +30,9 @@ _start:
     mov sp, 0x7c00
     sti                            ; Enable interrupts for BIOS disk services
 
+    ; --- Boot checkpoint: stage2 is alive at 0x8000 ---
+    call print_2
+
     ; 1. Load the KERNEL into 0x10000 (12 chunks of 64 sectors)
     mov cx, KERNEL_TOTAL_SECTORS / KERNEL_CHUNK_SECTORS
 .read_kernel_loop:
@@ -45,6 +48,9 @@ _start:
     add word [disk_dap + 6], 0x0800 ; Advance segment by 32KB
     pop cx
     loop .read_kernel_loop
+
+    ; --- Boot checkpoint: kernel image fully read from disk ---
+    call print_k
 
     ; 2. Load the RAMDISK into 0x70000
     mov cx, RAMDISK_TOTAL_SECTORS / KERNEL_CHUNK_SECTORS
@@ -71,6 +77,9 @@ _start:
 .done_reading:
     cli                            
 
+    ; --- Boot checkpoint: ramdisk phase done (loaded or gracefully skipped) ---
+    call print_r
+
     ; Enable A20 Line
     in al, 0x92
     or al, 2
@@ -80,6 +89,10 @@ _start:
     mov eax, cr0
     or eax, 1
     mov cr0, eax
+
+    ; --- Boot checkpoint: A20 + GDT done, about to enter protected mode ---
+    call print_d
+
     jmp CODE_SEG:protected_mode_start
 
 disk_error:
@@ -90,6 +103,47 @@ disk_error:
     cli
     hlt
     jmp $
+
+; --- Minimal serial checkpoint helpers (COM1, port 0x3f8), 16-bit part ---
+print_2:
+    push ax
+    push dx
+    mov dx, 0x3f8
+    mov al, '2'
+    out dx, al
+    pop dx
+    pop ax
+    ret
+
+print_k:
+    push ax
+    push dx
+    mov dx, 0x3f8
+    mov al, 'K'
+    out dx, al
+    pop dx
+    pop ax
+    ret
+
+print_r:
+    push ax
+    push dx
+    mov dx, 0x3f8
+    mov al, 'R'
+    out dx, al
+    pop dx
+    pop ax
+    ret
+
+print_d:
+    push ax
+    push dx
+    mov dx, 0x3f8
+    mov al, 'D'
+    out dx, al
+    pop dx
+    pop ax
+    ret
 
 align 4
 disk_dap:
@@ -102,6 +156,15 @@ disk_dap:
 
 [bits 32]
 protected_mode_start:
+    ; --- Boot checkpoint: protected mode entered (far jump worked) ---
+    push eax
+    push edx
+    mov dx, 0x3f8
+    mov al, 'P'
+    out dx, al
+    pop edx
+    pop eax
+
     mov ax, DATA_SEG
     mov ds, ax
     mov es, ax
@@ -124,6 +187,15 @@ protected_mode_start:
     cld
     rep movsd
 
+    ; --- Boot checkpoint: kernel + ramdisk copied to final physical addresses ---
+    push eax
+    push edx
+    mov dx, 0x3f8
+    mov al, 'M'
+    out dx, al
+    pop edx
+    pop eax
+
     ; --- Build Page Tables: Higher-Half & Full 1GB Identity Mappings ---
     ; Zero 4 pages (PML4 @ 0x1000, PDPT @ 0x2000, PD @ 0x3000, Extra @ 0x4000)
     mov edi, 0x1000          
@@ -140,7 +212,6 @@ protected_mode_start:
     mov dword [0x2000], 0x3003
     
     ; Populate 512 entries in PD = 512 x 2MB = 1GB Physical RAM & MMIO Mapped!
-    ; Fixes QEMU Triple Fault by identity-mapping memory above 4MB and high PCI BAR MMIO.
     mov edi, 0x3000
     mov eax, 0x83                ; Present + Writable + PageSize (2MB Huge)
     mov ecx, 512
@@ -150,6 +221,15 @@ protected_mode_start:
     add eax, 0x200000            ; Advance physical address by 2MB
     add edi, 8
     loop .map_1gb_loop
+
+    ; --- Boot checkpoint: page tables built ---
+    push eax
+    push edx
+    mov dx, 0x3f8
+    mov al, 'G'
+    out dx, al
+    pop edx
+    pop eax
 
     ; Load CR3
     mov eax, 0x1000
@@ -172,10 +252,28 @@ protected_mode_start:
     or eax, 0x80000000           
     mov cr0, eax
 
+    ; --- Boot checkpoint: paging enabled, about to enter long mode ---
+    push eax
+    push edx
+    mov dx, 0x3f8
+    mov al, 'X'
+    out dx, al
+    pop edx
+    pop eax
+
     jmp CODE64_SEG:long_mode_start
 
 [bits 64]
 long_mode_start:
+    ; --- Boot checkpoint: long mode entered (far jump into 64-bit worked) ---
+    push rax
+    push rdx
+    mov dx, 0x3f8
+    mov al, 'L'
+    out dx, al
+    pop rdx
+    pop rax
+
     mov ax, DATA_SEG
     mov ds, ax
     mov es, ax
@@ -186,6 +284,15 @@ long_mode_start:
     ; Relocate Stack Pointer (RSP) to Higher-Half Safe RAM (Physical 0x300000)
     mov rax, 0xFFFF_8000_0030_0000
     mov rsp, rax
+
+    ; --- Boot checkpoint: about to jump into the higher-half alias ---
+    push rax
+    push rdx
+    mov dx, 0x3f8
+    mov al, 'H'
+    out dx, al
+    pop rdx
+    pop rax
 
     ; Jump to Kernel in Higher-Half space
     mov rax, higher_half_entry
@@ -201,6 +308,17 @@ higher_half_entry:
     ; Flush TLB
     mov rax, cr3
     mov cr3, rax
+
+    ; --- Boot checkpoint: last one before handing off to the Rust kernel.
+    ; If this is the last letter you ever see, the fault is in
+    ; boot_x86.s's _start (BSS zero or the jump itself), not here. ---
+    push rax
+    push rdx
+    mov dx, 0x3f8
+    mov al, 'U'
+    out dx, al
+    pop rdx
+    pop rax
 
     ; Jump to Rust kernel main
     mov rax, KERNEL_VIRT_LOAD_ADDR
