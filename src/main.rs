@@ -64,6 +64,7 @@ unsafe extern "C" {
 }
 
 #[unsafe(no_mangle)]
+#[link_section = ".text.entry"]
 pub extern "C" fn kmain() -> ! {
     let mut uart = unsafe { uart::Uart::init() };
     // Checkpoint 0: kmain was reached at all, and the UART's own
