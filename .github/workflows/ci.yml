@@ -8,6 +8,7 @@ jobs:
   build-and-test:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         include:
           - target: aarch64-unknown-none
@@ -31,8 +32,16 @@ jobs:
       - name: Setup Rust Nightly Toolchain
         uses: dtolnay/rust-toolchain@nightly
         with:
-          targets: x86_64-unknown-none, aarch64-unknown-none
+          targets: |
+            x86_64-unknown-none
+            aarch64-unknown-none
           components: llvm-tools-preview
+
+      # [NEW] Expose rust-objcopy globally so build.sh can use it
+      - name: Add llvm-tools to GITHUB_PATH
+        run: |
+          TOOLCHAIN_BIN=$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | grep host | cut -f2 -d' ')/bin
+          echo "$TOOLCHAIN_BIN" >> $GITHUB_PATH
 
       - name: Create ramdisk (ARM only)
         if: matrix.target == 'aarch64-unknown-none'
@@ -40,9 +49,6 @@ jobs:
           mkdir -p rootfs/bin
           echo "Hello from mitosOS in-memory filesystem!" > rootfs/test.txt
           aarch64-linux-gnu-as -o test_program_aarch64.o userspace/test_program_aarch64.s
-          # -Ttext places _start at memory::USER_SPACE_BASE (0x8000000000)
-          # + 0x10000, matching build.sh's x86_64 link step -- elf.rs
-          # refuses to load anything below USER_SPACE_BASE now.
           aarch64-linux-gnu-ld -e _start -Ttext=0x8000010000 -o rootfs/bin/test_program test_program_aarch64.o
           rm -f test_program_aarch64.o
           tar -cf rootfs.tar -C rootfs bin/test_program test.txt
@@ -51,12 +57,10 @@ jobs:
         if: matrix.target == 'aarch64-unknown-none'
         run: cargo build --release --target ${{ matrix.target }}
 
+      # [NEW] Simplified because rust-objcopy is now in the global PATH
       - name: Prepare boot image (ARM only)
         if: matrix.target == 'aarch64-unknown-none'
-        run: |
-          TOOLCHAIN_BIN=$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | grep host | cut -f2 -d' ')/bin
-          export PATH=$PATH:$TOOLCHAIN_BIN
-          rust-objcopy --strip-all -O binary target/${{ matrix.target }}/release/mitosos ${{ matrix.bin_name }}
+        run: rust-objcopy --strip-all -O binary target/${{ matrix.target }}/release/mitosos ${{ matrix.bin_name }}
 
       - name: Build bootloader + kernel + disk image (x86_64 only)
         if: matrix.target == 'x86_64-unknown-none'
@@ -68,7 +72,6 @@ jobs:
         run: |
           set -o pipefail
           
-          # 1. Define architecture-specific variables
           if [ "${{ matrix.target }}" = "aarch64-unknown-none" ]; then
             BOOT_ARGS="-kernel kernel8.img"
             TIMEOUT_SEC=180
@@ -77,22 +80,14 @@ jobs:
             TIMEOUT_SEC=45
           fi
 
-          # Both architectures should now gracefully isolate the fault rather than panic
           ISOLATION_MSG="Terminating isolated task..."
-
-          # 2. Combine the full QEMU command and target command
           QEMU_CMD="${{ matrix.qemu_bin }} ${{ matrix.qemu_flags }} $BOOT_ARGS"
           INPUT_CMD="run /bin/test_program"
 
-          # 3. Create the Expect script dynamically
           cat << 'EOF' > run_test.exp
-          # Set the overall timeout for the script
           set timeout $env(TIMEOUT_SEC)
-          
-          # Start QEMU through a shell to safely handle spaces in arguments
           spawn sh -c "$env(QEMU_CMD)"
           
-          # Stage A: Wait for the kernel to finish booting
           expect {
               "mitosOS: kernel_main reached. Boot OK." { 
                   puts "\n> CI: Boot confirmed! Waiting 2 seconds for shell..."
@@ -108,11 +103,9 @@ jobs:
               }
           }
           
-          # Stage B: Type the command slowly to prevent UART FIFO drops
           set send_slow {1 .05}
           send -s "$env(INPUT_CMD)\r"
           
-          # Stage C: Wait for the process to run and trigger the graceful termination
           expect {
               "$env(ISOLATION_MSG)" { 
                   puts "\n> CI: User-mode fault successfully isolated."
@@ -127,7 +120,6 @@ jobs:
               }
           }
           
-          # Stage D: Verify the kernel survived and shell returned
           expect {
               "mitosOS>" {
                   puts "\n> CI: Shell survived the fault! Test passed."
@@ -141,21 +133,13 @@ jobs:
           }
           EOF
 
-          # 4. Export variables so Expect can read them
           export QEMU_CMD
           export TIMEOUT_SEC
           export INPUT_CMD
           export ISOLATION_MSG
 
-          # 5. Run Expect and capture the output. `|| true` matters here:
-          # GitHub Actions runs this script with `set -e` by default, and
-          # expect exits 1 on the eof/timeout branches -- without this,
-          # a failed boot would abort the script right here, and the
-          # diagnostic dump + assertions below would never run at all,
-          # which is exactly why past failures showed no serial output.
           expect run_test.exp 2>&1 | tee qemu_output.log || true
 
-          # 6. Final sanity assertions (using expect's robust exit code as the primary source of truth)
           echo "----- captured serial output -----"
           cat qemu_output.log
           
