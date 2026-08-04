@@ -8,7 +8,7 @@ SECTIONS
     /* Aligning sections to 4K (page boundaries) is vital for future memory 
        protection and prevents SIMD unaligned memory faults */
     .text : ALIGN(4096) {
-        KEEP(*(.text.boot))
+        KEEP(*(.text.entry))
         *(.text .text.*)
     }
 
