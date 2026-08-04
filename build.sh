@@ -25,15 +25,10 @@ fi
 truncate -s "$STAGE2_MAX_BYTES" stage2.bin
 
 # =========================================================================
-# Ramdisk contents: assembled BEFORE building the kernel, since aarch64's
-# include_bytes!("../rootfs.tar") needs the file to exist at compile time.
+# Ramdisk contents: assembled BEFORE building the kernel
 # =========================================================================
 echo "==> Assembling userspace test_program (static ELF64, no libc)"
 nasm -f elf64 userspace/test_program.s -o test_program.o
-# -Ttext places _start at memory::USER_SPACE_BASE (0x8000000000) + 0x10000,
-# not ld's usual ~0x400000 default. elf.rs now refuses to load any PT_LOAD
-# segment below USER_SPACE_BASE -- see its comment for why -- so this has
-# to move, not just the kernel side.
 ld -e _start -Ttext=0x8000010000 -o test_program test_program.o
 rm -f test_program.o
 
@@ -42,21 +37,21 @@ rm -rf rootfs
 mkdir -p rootfs/bin
 echo "Hello from mitosOS in-memory filesystem!" > rootfs/test.txt
 cp test_program rootfs/bin/test_program
-# List paths explicitly (not `-C rootfs .`) so entries are named "bin/test_program"
-# and "test.txt" with no leading "./" -- the VFS lookup only strips a leading "/".
 tar -cf rootfs.tar -C rootfs bin/test_program test.txt
-# Strictly pad the tarball to 128KB so stage2.s doesn't over-read and crash
 truncate -s "$RAMDISK_MAX_BYTES" rootfs.tar
 
 echo "==> Building kernel ($KERNEL_TARGET)"
 cargo build --release --target "$KERNEL_TARGET"
 
-KERNEL_BIN=$(find "target/$KERNEL_TARGET/release" -maxdepth 1 -type f -executable ! -name "*.d" | head -n1)
-if [ -z "$KERNEL_BIN" ]; then
+KERNEL_ELF=$(find "target/$KERNEL_TARGET/release" -maxdepth 1 -type f -executable ! -name "*.d" | head -n1)
+if [ -z "$KERNEL_ELF" ]; then
     echo "ERROR: couldn't find built kernel binary in target/$KERNEL_TARGET/release" >&2
     exit 1
 fi
-cp "$KERNEL_BIN" kernel.bin
+
+# --- FIX: Convert the compiled ELF into a flat binary using rust-objcopy ---
+echo "==> Flattening kernel ELF into raw machine code binary"
+rust-objcopy --strip-all -O binary "$KERNEL_ELF" kernel.bin
 
 KERNEL_SIZE=$(stat -c%s kernel.bin 2>/dev/null || stat -f%z kernel.bin)
 if [ "$KERNEL_SIZE" -gt "$KERNEL_MAX_BYTES" ]; then
@@ -67,7 +62,6 @@ fi
 truncate -s "$KERNEL_MAX_BYTES" kernel.bin
 
 echo "==> Building disk image (stage1 + stage2 + kernel + ramdisk)"
-# Because we strictly padded everything, concatenating them places rootfs.tar exactly at LBA 833!
 cat stage1.bin stage2.bin kernel.bin rootfs.tar > disk.img
 
 echo "==> Done: disk.img ready"
