@@ -237,7 +237,7 @@ protected_mode_start:
 
     ; Enable PAE in CR4
     mov eax, cr4
-    or eax, 0x20               
+    or eax, 0x620               
     mov cr4, eax
 
     ; Enable Long Mode & NX-bit in EFER MSR
@@ -249,7 +249,8 @@ protected_mode_start:
 
     ; Enable Paging in CR0 (Activates Long Mode)
     mov eax, cr0
-    or eax, 0x80000000           
+    and eax, ~(1 << 2)
+    or eax, (1 << 1)           
     mov cr0, eax
 
     ; --- Boot checkpoint: paging enabled, about to enter long mode ---
