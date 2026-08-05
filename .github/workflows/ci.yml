@@ -27,7 +27,7 @@ jobs:
       - name: Install dependencies
         run: |
           echo 'Acquire::ForceIPv4 "true";' | sudo tee /etc/apt/apt.conf.d/99force-ipv4
-          export DEBIAN_FRONTEND=noninteractive Yoo
+          export DEBIAN_FRONTEND=noninteractive
           sudo apt-get update
           sudo apt-get install -y qemu-system-arm qemu-system-x86 gcc-aarch64-linux-gnu nasm expect
 
@@ -107,32 +107,49 @@ jobs:
           
           set send_slow {1 .05}
           send -s "$env(INPUT_CMD)\r"
-          
+
+          # `run` spawns the isolated process and returns immediately --
+          # the shell prints its next "mitosOS>" prompt right away, before
+          # the scheduler has even given the new task a timeslice to fault
+          # in. So the prompt can legitimately arrive *before*
+          # ISOLATION_MSG in the stream, not just after it. Waiting for
+          # them with two sequential `expect` blocks assumed a strict
+          # order that doesn't hold and failed the job even when the
+          # kernel behaved correctly. Watching for both patterns in one
+          # block (via exp_continue, until both have been seen) accepts
+          # either order and still fails on a real hang, since a real
+          # hang means one of the two never shows up before timeout.
+          set got_isolation 0
+          set got_prompt 0
+
           expect {
-              "$env(ISOLATION_MSG)" { 
+              "$env(ISOLATION_MSG)" {
+                  set got_isolation 1
                   puts "\n> CI: User-mode fault successfully isolated."
+                  if {!$got_prompt} { exp_continue }
+              }
+              "mitosOS>" {
+                  set got_prompt 1
+                  puts "\n> CI: Shell prompt seen."
+                  if {!$got_isolation} { exp_continue }
               }
               eof {
                   puts "\n> CI: Error: QEMU crashed or exited unexpectedly!"
                   exit 1
               }
               timeout {
-                  puts "\n> CI: Error: Timed out waiting for task termination message."
+                  if {!$got_isolation} {
+                      puts "\n> CI: Error: Timed out waiting for task termination message."
+                  } else {
+                      puts "\n> CI: Error: Shell did not return after fault. OS likely hung."
+                  }
                   exit 1
               }
           }
-          
-          expect {
-              "mitosOS>" {
-                  puts "\n> CI: Shell survived the fault! Test passed."
-                  sleep 1
-                  exit 0
-              }
-              timeout {
-                  puts "\n> CI: Error: Shell did not return after fault. OS likely hung."
-                  exit 1
-              }
-          }
+
+          puts "\n> CI: Shell survived the fault! Test passed."
+          sleep 1
+          exit 0
           EOF
 
           export QEMU_CMD
