@@ -491,8 +491,11 @@ fn allocate_user_stack(page_table_root: usize) -> Option<usize> {
         unsafe {
             // Zeroed for the same reason elf.rs zeroes segment frames --
             // otherwise a fresh stack starts out full of whatever
-            // garbage was already in that physical frame.
-            core::ptr::write_bytes(phys as *mut u8, 0, PAGE_SIZE);
+            // garbage was already in that physical frame. Written
+            // through `phys_to_virt`'s translated alias, not `phys`
+            // directly -- see its doc comment for why a bare physical
+            // address isn't dereferenceable on this architecture.
+            core::ptr::write_bytes(crate::memory::phys_to_virt(phys) as *mut u8, 0, PAGE_SIZE);
             crate::vmm::arch::map_page(root, vaddr, phys, flags).ok()?;
         }
     }
@@ -522,7 +525,7 @@ fn allocate_user_stack(page_table_root: usize) -> Option<usize> {
         let vaddr = stack_bottom + i * PAGE_SIZE;
         let phys = crate::memory::vmm_alloc_frame()?;
         unsafe {
-            core::ptr::write_bytes(phys as *mut u8, 0, PAGE_SIZE);
+            core::ptr::write_bytes(crate::memory::phys_to_virt(phys) as *mut u8, 0, PAGE_SIZE);
             crate::vmm::arch::map_page(root, vaddr, phys, flags).ok()?;
         }
     }
