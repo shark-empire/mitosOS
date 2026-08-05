@@ -66,6 +66,11 @@ pub mod arch {
         pub entries: [PageTableEntry; 512],
     }
 
+    /// `root` is a raw physical page-table-root address (straight off
+    /// CR3, or a stored `memory_root` field) -- that's what every
+    /// caller naturally has on hand. Translated to a dereferenceable
+    /// pointer once, right here; see `memory::phys_to_virt`'s doc
+    /// comment for why that's necessary at all on this architecture.
     pub unsafe fn map_page(
         root: *mut PageTable,
         virt: usize,
@@ -75,6 +80,8 @@ pub mod arch {
         if virt & 0xFFF != 0 || phys & 0xFFF != 0 {
             return Err(MemoryError::InvalidAddress);
         }
+
+        let root = crate::memory::phys_to_virt(root as usize) as *mut PageTable;
 
         let pml4_idx = (virt >> 39) & 0x1FF;
         let pdpt_idx = (virt >> 30) & 0x1FF;
@@ -105,10 +112,10 @@ pub mod arch {
         if !entry.is_present() {
             let frame = vmm_alloc_frame().ok_or(MemoryError::FrameAllocationFailed)?;
             unsafe {
-                core::ptr::write_bytes(frame as *mut u8, 0, 4096);
+                core::ptr::write_bytes(crate::memory::phys_to_virt(frame) as *mut u8, 0, 4096);
             }
             entry.set_frame(
-                frame,
+                frame, // physical, on purpose -- this is what a page-table entry stores
                 MapFlags {
                     writable: true,
                     user_accessible: true, // New intermediate tables must be user-accessible
@@ -120,7 +127,8 @@ pub mod arch {
             // CRITICAL: If the table already exists, upgrade its permissions so Ring 3 can traverse it!
             entry.ensure_user_accessible();
         }
-        Ok(entry.physical_address() as *mut PageTable)
+        // Dereferenceable pointer, not the raw physical address.
+        Ok(crate::memory::phys_to_virt(entry.physical_address()) as *mut PageTable)
     }
 
         /// Unmaps a mapped virtual page, clearing the entry and flushing the TLB.
@@ -132,6 +140,8 @@ pub mod arch {
             return Err(MemoryError::InvalidAddress);
         }
 
+        let root = crate::memory::phys_to_virt(root as usize) as *mut PageTable;
+
         let pml4_idx = (virt >> 39) & 0x1FF;
         let pdpt_idx = (virt >> 30) & 0x1FF;
         let pd_idx   = (virt >> 21) & 0x1FF;
@@ -141,15 +151,15 @@ pub mod arch {
             let pml4_entry = &mut (*root).entries[pml4_idx];
             if !pml4_entry.is_present() { return Err(MemoryError::InvalidAddress); }
 
-            let pdpt = pml4_entry.physical_address() as *mut PageTable;
+            let pdpt = crate::memory::phys_to_virt(pml4_entry.physical_address()) as *mut PageTable;
             let pdpt_entry = &mut (*pdpt).entries[pdpt_idx];
             if !pdpt_entry.is_present() { return Err(MemoryError::InvalidAddress); }
 
-            let pd = pdpt_entry.physical_address() as *mut PageTable;
+            let pd = crate::memory::phys_to_virt(pdpt_entry.physical_address()) as *mut PageTable;
             let pd_entry = &mut (*pd).entries[pd_idx];
             if !pd_entry.is_present() { return Err(MemoryError::InvalidAddress); }
 
-            let pt = pd_entry.physical_address() as *mut PageTable;
+            let pt = crate::memory::phys_to_virt(pd_entry.physical_address()) as *mut PageTable;
             let pt_entry = &mut (*pt).entries[pt_idx];
 
             if !pt_entry.is_present() {
@@ -173,6 +183,8 @@ pub mod arch {
         root: *const PageTable,
         virt: usize,
     ) -> Option<usize> {
+        let root = crate::memory::phys_to_virt(root as usize) as *const PageTable;
+
         let pml4_idx = (virt >> 39) & 0x1FF;
         let pdpt_idx = (virt >> 30) & 0x1FF;
         let pd_idx   = (virt >> 21) & 0x1FF;
@@ -183,16 +195,18 @@ pub mod arch {
             let pml4_entry = &(*root).entries[pml4_idx];
             if !pml4_entry.is_present() { return None; }
 
-            let pdpt = pml4_entry.physical_address() as *const PageTable;
+            let pdpt = crate::memory::phys_to_virt(pml4_entry.physical_address()) as *const PageTable;
             let pdpt_entry = &(*pdpt).entries[pdpt_idx];
             if !pdpt_entry.is_present() { return None; }
 
-            // Check for 1GB Huge Page at PDPT level
+            // Check for 1GB Huge Page at PDPT level. Returned as-is: the
+            // whole point of this function is to hand back a *physical*
+            // address, this one just isn't page-table-entry-granular.
             if (pdpt_entry.0 & (1 << 7)) != 0 {
                 return Some((pdpt_entry.physical_address() & !0x3FFF_FFFF) + (virt & 0x3FFF_FFFF));
             }
 
-            let pd = pdpt_entry.physical_address() as *const PageTable;
+            let pd = crate::memory::phys_to_virt(pdpt_entry.physical_address()) as *const PageTable;
             let pd_entry = &(*pd).entries[pd_idx];
             if !pd_entry.is_present() { return None; }
 
@@ -201,7 +215,7 @@ pub mod arch {
                 return Some((pd_entry.physical_address() & !0x1F_FFFF) + (virt & 0x1F_FFFF));
             }
 
-            let pt = pd_entry.physical_address() as *const PageTable;
+            let pt = crate::memory::phys_to_virt(pd_entry.physical_address()) as *const PageTable;
             let pt_entry = &(*pt).entries[pt_idx];
             if !pt_entry.is_present() { return None; }
 
@@ -484,9 +498,12 @@ pub fn handle_page_fault(fault_addr: usize, is_present: bool, is_user: bool) -> 
         None => return false, // OOM: System is completely out of physical memory
     };
 
-    // 3. Zero out the memory to prevent leaking old data to new processes
+    // 3. Zero out the memory to prevent leaking old data to new processes.
+    // `phys_to_virt` is a no-op on aarch64 (permanent identity map) and
+    // the necessary higher-half translation on x86_64 (see its doc
+    // comment), so this one line is correct on both architectures.
     unsafe {
-        core::ptr::write_bytes(frame as *mut u8, 0, 4096);
+        core::ptr::write_bytes(crate::memory::phys_to_virt(frame) as *mut u8, 0, 4096);
     }
 
     // 4. Map it in dynamically
@@ -536,35 +553,50 @@ pub fn handle_page_fault(fault_addr: usize, is_present: bool, is_user: bool) -> 
 /// the allocator can then hand out to something else while the old
 /// mapping can still reach it.
 pub unsafe fn free_process_page_table(root: *mut arch::PageTable) {
+    use crate::memory::{phys_to_virt, vmm_free_frame};
+
     unsafe {
+        // `root` (and every `..._phys` below) stays exactly the raw
+        // physical address the frame allocator's bitmap is indexed by
+        // -- that's what gets freed. The `..._table` pointers are a
+        // separate, dereferenceable (translated) alias of the same
+        // memory, used only for walking. Conflating the two would
+        // either free the wrong bitmap index or, on x86_64, walk
+        // through an unmapped physical-looking pointer -- see
+        // `memory::phys_to_virt`'s doc comment.
+        let root_virt = phys_to_virt(root as usize) as *mut arch::PageTable;
+
         for l0 in 1..512 {
-            let e0 = &(*root).entries[l0];
+            let e0 = &(*root_virt).entries[l0];
             if !e0.is_present() { continue; }
-            let l1_table = e0.physical_address() as *mut arch::PageTable;
+            let l1_phys = e0.physical_address();
+            let l1_table = phys_to_virt(l1_phys) as *mut arch::PageTable;
 
             for l1 in 0..512 {
                 let e1 = &(*l1_table).entries[l1];
                 if !e1.is_present() { continue; }
-                let l2_table = e1.physical_address() as *mut arch::PageTable;
+                let l2_phys = e1.physical_address();
+                let l2_table = phys_to_virt(l2_phys) as *mut arch::PageTable;
 
                 for l2 in 0..512 {
                     let e2 = &(*l2_table).entries[l2];
                     if !e2.is_present() { continue; }
-                    let l3_table = e2.physical_address() as *mut arch::PageTable;
+                    let l3_phys = e2.physical_address();
+                    let l3_table = phys_to_virt(l3_phys) as *mut arch::PageTable;
 
                     for l3 in 0..512 {
                         let e3 = &(*l3_table).entries[l3];
                         if !e3.is_present() { continue; }
                         // Leaf: an actual page the process owned.
-                        crate::memory::vmm_free_frame(e3.physical_address());
+                        vmm_free_frame(e3.physical_address());
                     }
-                    crate::memory::vmm_free_frame(l3_table as usize);
+                    vmm_free_frame(l3_phys);
                 }
-                crate::memory::vmm_free_frame(l2_table as usize);
+                vmm_free_frame(l2_phys);
             }
-            crate::memory::vmm_free_frame(l1_table as usize);
+            vmm_free_frame(l1_phys);
         }
-        crate::memory::vmm_free_frame(root as usize);
+        vmm_free_frame(root as usize);
     }
 }
 
@@ -578,13 +610,15 @@ pub unsafe fn free_process_page_table(root: *mut arch::PageTable) {
 /// or mutate anything.
 fn present_child(entry: &arch::PageTableEntry) -> Option<*mut arch::PageTable> {
     if entry.is_present() {
-        Some(entry.physical_address() as *mut arch::PageTable)
+        Some(crate::memory::phys_to_virt(entry.physical_address()) as *mut arch::PageTable)
     } else {
         None
     }
 }
 
-/// Checks one 4KB page. `virt` must already be page-aligned.
+/// Checks one 4KB page. `virt` must already be page-aligned. `root` is
+/// a raw physical page-table-root address, same contract as every
+/// `arch::*` entry point -- translated once here.
 fn page_is_user_accessible(root: *mut arch::PageTable, virt: usize, need_write: bool) -> bool {
     let l0_idx = (virt >> 39) & 0x1FF;
     let l1_idx = (virt >> 30) & 0x1FF;
@@ -592,6 +626,7 @@ fn page_is_user_accessible(root: *mut arch::PageTable, virt: usize, need_write: 
     let l3_idx = (virt >> 12) & 0x1FF;
 
     unsafe {
+        let root = crate::memory::phys_to_virt(root as usize) as *mut arch::PageTable;
         let Some(l1) = present_child(&(*root).entries[l0_idx]) else { return false };
         let Some(l2) = present_child(&(*l1).entries[l1_idx]) else { return false };
         let Some(l3) = present_child(&(*l2).entries[l2_idx]) else { return false };
