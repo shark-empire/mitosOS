@@ -10,7 +10,7 @@ use core::mem;
 /// physical address is never itself a dereferenceable pointer here --
 /// every physical access has to go through this offset instead, same as
 /// drivers/ahci.rs's MMIO base does.
-const PHYS_MEM_OFFSET: usize = 0xFFFF_8000_0000_0000;
+pub const PHYS_MEM_OFFSET: usize = 0xFFFF_8000_0000_0000;
 
 #[inline]
 fn phys_to_virt(phys: usize) -> usize {
