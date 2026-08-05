@@ -69,15 +69,13 @@ impl crate::drivers::ahci::Hal for KernelHal {
             device: true,
         };
 
-        let mut page = page_start;
-        while page < page_end {
-            unsafe {
-                let _ = crate::vmm::arch::map_page(root, page, page, flags);
-            }
-            page += 0x1000;
-        }
+       let mut page = page_start;
+          unsafe {while page < page_end {
+            let virt_page = page + (self.phys_mem_offset as usize);
+            let _ = crate::vmm::arch::map_page(root, virt_page, page, flags);
+            page += 0x1000;}}
 
-        VirtAddr::new(phys_addr as u64)
+        VirtAddr::new((phys_addr as u64) + self.phys_mem_offset)
     }
 
     unsafe fn alloc_dma(&mut self, size: usize) -> Option<(PhysAddr, VirtAddr)> {
@@ -121,7 +119,7 @@ pub fn init_ahci_devices(uart: &mut impl Write) {
     for dev in scan_buses() {
         if dev.class == 0x01 && dev.subclass == 0x06 {
             let abar_phys = PhysAddr::new(dev.bar5 as u64);
-            let mut hal = KernelHal { phys_mem_offset: 0 };
+            let mut hal = KernelHal { phys_mem_offset: crate::hal::acpi::PHYS_MEM_OFFSET as u64 };
 
             match unsafe { AhciController::new(abar_phys, &mut hal) } {
                 Ok(mut ahci_controller) => {
