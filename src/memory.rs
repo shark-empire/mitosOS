@@ -5,6 +5,50 @@ use core::cell::UnsafeCell;
 use core::ptr;
 use core::sync::atomic::{AtomicBool, Ordering};
 
+// =========================================================================
+// 0. PHYSICAL <-> VIRTUAL TRANSLATION
+// =========================================================================
+//
+// This kernel is higher-half only on x86_64: bootloader/src/stage2.s
+// builds a *temporary* identity mapping to get from real mode into long
+// mode, then deliberately tears it down (zeroes PML4[0], flushes the
+// TLB) immediately before jumping into Rust, as a hardening step. From
+// that point on, a bare physical address -- straight off CR3, a fresh
+// `vmm_alloc_frame()`, or a `PageTableEntry::physical_address()` -- is
+// *not* a valid pointer, unlike a design that keeps everything
+// identity-mapped forever. Every physical address this kernel ever
+// needs to dereference sits inside the first ~1GB of RAM (the frame
+// allocator, the heap, and every page table this kernel builds all
+// live there), which the *permanent* higher-half alias at PML4 index
+// 256 covers 1:1, so this fixed offset is always enough.
+//
+// AArch64 doesn't need any of this: mmu.rs keeps a permanent flat
+// identity map (kernel RAM + MMIO, all under L0 index 0) that is never
+// torn down, so a bare physical address is already a valid pointer
+// there. `phys_to_virt` is a no-op on that target -- every call site
+// below can use it unconditionally without `#[cfg]`.
+
+/// Higher-half offset used by every physical address this kernel
+/// hands the CPU as a pointer on x86_64. Matches the alias
+/// bootloader/src/stage2.s builds at PML4[256] (see `higher_half_entry`).
+#[cfg(target_arch = "x86_64")]
+pub const PHYS_VIRT_OFFSET: usize = 0xFFFF_8000_0000_0000;
+
+/// Turns a physical address into a pointer the CPU can dereference
+/// right now. See the module-level comment above for why this is
+/// needed on x86_64 and a no-op on aarch64.
+#[inline(always)]
+pub const fn phys_to_virt(phys: usize) -> usize {
+    #[cfg(target_arch = "x86_64")]
+    {
+        phys | PHYS_VIRT_OFFSET
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        phys
+    }
+}
+
 /// Hardware-agnostic memory mapping flags.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MapFlags {
@@ -122,7 +166,13 @@ impl FastBlockAllocator {
             _ => return ptr::null_mut(),
         };
         self.next_free_byte = alloc_end;
-        alloc_start as *mut u8
+        // `heap_start`/`heap_end`/`next_free_byte` are tracked as plain
+        // physical-style offsets (see HEAP_START below); translate only
+        // the final pointer we actually hand back to the caller. Freed
+        // blocks recycled through the bucket free-lists above never hit
+        // this path again, so they don't need a second translation --
+        // they're already whatever this function returned the first time.
+        phys_to_virt(alloc_start) as *mut u8
     }
 }
 
@@ -288,23 +338,29 @@ pub fn alloc_frame() -> Option<usize> {
 pub unsafe fn map_page(page_table_root: usize, vaddr: usize, paddr: usize) -> Result<(), &'static str> {
     #[cfg(target_arch = "x86_64")]
     {
-        let pml4 = page_table_root as *mut u64;
-        
+        // `page_table_root` arrives as a raw physical CR3-style value
+        // (that's what every caller naturally has on hand); translate
+        // once here so every table pointer below is dereferenceable.
+        let pml4 = phys_to_virt(page_table_root) as *mut u64;
+
         let pml4_idx = (vaddr >> 39) & 0x1FF;
         let pdpt_idx = (vaddr >> 30) & 0x1FF;
         let pd_idx   = (vaddr >> 21) & 0x1FF;
         let pt_idx   = (vaddr >> 12) & 0x1FF;
     
+        // Returns a *dereferenceable* pointer to the next-level table
+        // (already translated), not the raw physical address -- that
+        // stays exactly where it belongs, stored in the entry itself.
         unsafe fn get_or_create_table(entry: *mut u64) -> Result<*mut u64, &'static str> {
             unsafe {
                 let val = entry.read();
                 if (val & 1) != 0 {
-                    Ok(((val & !0xFFF) as usize) as *mut u64)
+                    Ok(phys_to_virt((val & !0xFFF) as usize) as *mut u64)
                 } else {
                     let new_frame = vmm_alloc_frame().ok_or("Out of memory: failed to allocate page table frame")?;
-                    ptr::write_bytes(new_frame as *mut u8, 0, PAGE_SIZE);
-                    entry.write((new_frame as u64) | 0x7); // Present, Writable, User
-                    Ok(new_frame as *mut u64)
+                    ptr::write_bytes(phys_to_virt(new_frame) as *mut u8, 0, PAGE_SIZE);
+                    entry.write((new_frame as u64) | 0x7); // Present, Writable, User -- physical, on purpose
+                    Ok(phys_to_virt(new_frame) as *mut u64)
                 }
             }
         }
@@ -314,7 +370,7 @@ pub unsafe fn map_page(page_table_root: usize, vaddr: usize, paddr: usize) -> Re
             let pd = get_or_create_table(pdpt.add(pdpt_idx))?;
             let pt = get_or_create_table(pd.add(pd_idx))?;
 
-            pt.add(pt_idx).write((paddr as u64) | 0x7); // Present, Writable, User
+            pt.add(pt_idx).write((paddr as u64) | 0x7); // Present, Writable, User -- physical, on purpose
 
             core::arch::asm!("invlpg [{}]", in(reg) vaddr, options(nostack, preserves_flags));
         }
@@ -382,7 +438,7 @@ pub unsafe fn create_process_page_table() -> Option<usize> {
     let root_frame = crate::memory::vmm_alloc_frame()?;
     
     unsafe {
-        core::ptr::write_bytes(root_frame as *mut u8, 0, 4096);
+        core::ptr::write_bytes(phys_to_virt(root_frame) as *mut u8, 0, 4096);
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -391,8 +447,13 @@ pub unsafe fn create_process_page_table() -> Option<usize> {
         unsafe {  
             core::arch::asm!("mov {}, cr3", out(reg) current_cr3, options(nomem, nostack));
         }
-        let active_root = (current_cr3 & !0xFFF) as *const u64;
-        let new_root = root_frame as *mut u64;
+        // `root_frame` itself stays physical -- it's returned as-is
+        // below for storage in the caller's `memory_root` field, which
+        // every other function in this file expects to hold a raw
+        // physical CR3-style value. Only the pointers used to actually
+        // walk/copy the tables here need translating.
+        let active_root = phys_to_virt(current_cr3 & !0xFFF) as *const u64;
+        let new_root = phys_to_virt(root_frame) as *mut u64;
         
         unsafe { 
             // The kernel is higher-half (see bootloader/src/stage2.s,
