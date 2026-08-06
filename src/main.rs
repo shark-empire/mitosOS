@@ -86,6 +86,14 @@ pub extern "C" fn kmain() -> ! {
         interrupts::init();
         let _ = writeln!(uart, "[boot] 1: interrupts::init() returned");
 
+        // 2b. Tear down the bootloader's temporary lower-half identity
+        //     mapping now that a real IDT is live -- see
+        //     memory::unmap_low_half_identity_map's doc comment for why
+        //     this moved out of stage2.s and has to run after
+        //     interrupts::init(), not before it.
+        #[cfg(target_arch = "x86_64")]
+        memory::unmap_low_half_identity_map();
+
         // 3. Initialize the heap allocator subsystem.
         memory::init_memory_subsystem(HEAP_START, HEAP_SIZE);
 
