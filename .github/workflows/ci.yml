@@ -39,7 +39,6 @@ jobs:
             aarch64-unknown-none
           components: llvm-tools-preview
 
-      # [NEW] Expose rust-objcopy globally so build.sh can use it
       - name: Add llvm-tools to GITHUB_PATH
         run: |
           TOOLCHAIN_BIN=$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | grep host | cut -f2 -d' ')/bin
@@ -59,7 +58,6 @@ jobs:
         if: matrix.target == 'aarch64-unknown-none'
         run: cargo build --release --target ${{ matrix.target }}
 
-      # [NEW] Simplified because rust-objcopy is now in the global PATH
       - name: Prepare boot image (ARM only)
         if: matrix.target == 'aarch64-unknown-none'
         run: rust-objcopy --strip-all -O binary target/${{ matrix.target }}/release/mitosos ${{ matrix.bin_name }}
@@ -78,7 +76,8 @@ jobs:
             BOOT_ARGS="-kernel kernel8.img"
             TIMEOUT_SEC=180
           else
-            BOOT_ARGS="-device ahci,id=ahci0 -drive id=os_disk,file=disk.img,format=raw,if=none -device ide-hd,drive=os_disk,bus=ahci0.0,bootindex=1"
+            # CORRECTED: Changed disk.img to build/boot.img
+            BOOT_ARGS="-device ahci,id=ahci0 -drive id=os_disk,file=build/boot.img,format=raw,if=none -device ide-hd,drive=os_disk,bus=ahci0.0,bootindex=1"
             TIMEOUT_SEC=45
           fi
 
@@ -87,18 +86,6 @@ jobs:
           INPUT_CMD="run /bin/test_program"
 
           cat << 'EOF' > run_test.exp
-          # Without this, tclsh fully buffers stdout once it's a pipe
-          # (as it is here, feeding `tee`) instead of a terminal. The
-          # kernel's earliest boot checkpoints are single raw characters
-          # with no trailing newline (`out 0x3f8, al`, no polling) --
-          # exactly the case a buffer never flushes until it fills or
-          # the process exits. `expect`'s own pattern matching against
-          # the live QEMU output is unaffected either way (it reads the
-          # spawned process directly), but a hang before that buffer
-          # fills means qemu_output.log -- and this log -- can look
-          # silent even when the kernel already printed several
-          # checkpoints past that point. Costs a little throughput;
-          # worth it for logs that mean what they show.
           fconfigure stdout -buffering none
           set timeout $env(TIMEOUT_SEC)
           spawn sh -c "$env(QEMU_CMD)"
@@ -121,17 +108,6 @@ jobs:
           set send_slow {1 .05}
           send -s "$env(INPUT_CMD)\r"
 
-          # `run` spawns the isolated process and returns immediately --
-          # the shell prints its next "mitosOS>" prompt right away, before
-          # the scheduler has even given the new task a timeslice to fault
-          # in. So the prompt can legitimately arrive *before*
-          # ISOLATION_MSG in the stream, not just after it. Waiting for
-          # them with two sequential `expect` blocks assumed a strict
-          # order that doesn't hold and failed the job even when the
-          # kernel behaved correctly. Watching for both patterns in one
-          # block (via exp_continue, until both have been seen) accepts
-          # either order and still fails on a real hang, since a real
-          # hang means one of the two never shows up before timeout.
           set got_isolation 0
           set got_prompt 0
 
