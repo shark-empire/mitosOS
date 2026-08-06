@@ -76,10 +76,11 @@ jobs:
             BOOT_ARGS="-kernel kernel8.img"
             TIMEOUT_SEC=180
           else
-            # CORRECTED: Changed disk.img to build/boot.img
-            BOOT_ARGS="-device ahci,id=ahci0 -drive id=os_disk,file=build/boot.img,format=raw,if=none -device ide-hd,drive=os_disk,bus=ahci0.0,bootindex=1"
+            # Changed build/boot.img back to disk.img
+            BOOT_ARGS="-device ahci,id=ahci0 -drive id=os_disk,file=disk.img,format=raw,if=none -device ide-hd,drive=os_disk,bus=ahci0.0,bootindex=1"
             TIMEOUT_SEC=45
           fi
+
 
           ISOLATION_MSG="Terminating isolated task..."
           QEMU_CMD="${{ matrix.qemu_bin }} ${{ matrix.qemu_flags }} $BOOT_ARGS"
