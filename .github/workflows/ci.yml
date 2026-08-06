@@ -87,6 +87,19 @@ jobs:
           INPUT_CMD="run /bin/test_program"
 
           cat << 'EOF' > run_test.exp
+          # Without this, tclsh fully buffers stdout once it's a pipe
+          # (as it is here, feeding `tee`) instead of a terminal. The
+          # kernel's earliest boot checkpoints are single raw characters
+          # with no trailing newline (`out 0x3f8, al`, no polling) --
+          # exactly the case a buffer never flushes until it fills or
+          # the process exits. `expect`'s own pattern matching against
+          # the live QEMU output is unaffected either way (it reads the
+          # spawned process directly), but a hang before that buffer
+          # fills means qemu_output.log -- and this log -- can look
+          # silent even when the kernel already printed several
+          # checkpoints past that point. Costs a little throughput;
+          # worth it for logs that mean what they show.
+          fconfigure stdout -buffering none
           set timeout $env(TIMEOUT_SEC)
           spawn sh -c "$env(QEMU_CMD)"
           
