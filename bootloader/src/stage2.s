@@ -352,10 +352,52 @@ higher_half_entry:
     ; 4. Align stack to satisfy System V AMD64 ABI on function entry
     sub rsp, 8
 
+    ; --- TEMP DIAGNOSTIC: print the computed jump target before using it,
+    ; so we can see in the serial log exactly where control is about to
+    ; go. Expect ":FFFF800000100000:" right after 'U'. Remove once the
+    ; hang is found. ---
+    mov dx, 0x3f8
+    mov al, ':'
+    out dx, al
+    mov rax, KERNEL_VIRT_LOAD_ADDR
+    call print_hex64
+    mov dx, 0x3f8
+    mov al, ':'
+    out dx, al
+
     ; Jump to Rust kernel main
     mov rax, KERNEL_VIRT_LOAD_ADDR
     jmp rax
 
+; --- TEMP DIAGNOSTIC helper: prints RAX as 16 hex chars over COM1.
+; Preserves every register it touches. Remove once the hang is found.
+print_hex64:
+    push rax
+    push rbx
+    push rcx
+    push rdx
+    mov rbx, rax
+    mov cl, 60
+.print_hex64_loop:
+    mov rax, rbx
+    shr rax, cl
+    and al, 0x0F
+    cmp al, 10
+    jb .print_hex64_digit
+    add al, 'A' - 10
+    jmp .print_hex64_out
+.print_hex64_digit:
+    add al, '0'
+.print_hex64_out:
+    mov dx, 0x3f8
+    out dx, al
+    sub cl, 4
+    jnc .print_hex64_loop
+    pop rdx
+    pop rcx
+    pop rbx
+    pop rax
+    ret
 
 align 8
 gdt_start:
