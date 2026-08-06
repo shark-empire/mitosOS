@@ -1,4 +1,4 @@
-Name: kernel-boot-test
+name: kernel-boot-test
 
 on:
   push:
