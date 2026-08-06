@@ -322,13 +322,13 @@ higher_half_entry:
     mov gs, ax
     mov ss, ax
 
-    ; 2. Safely unmap lower-half identity mapping (PML4[0])
-    mov rax, 0xFFFF_8000_0000_1000      
-    mov qword [rax], 0                  
-
-    ; Flush TLB
-    mov rax, cr3
-    mov cr3, rax
+    ; 2. NOTE: the lower-half identity mapping (PML4[0]) used to be torn
+    ; down right here. Moved to Rust -- see memory::unmap_low_half_identity_map
+    ; and its call site in kmain() (main.rs), right after interrupts::init()
+    ; returns -- so the teardown happens once a real IDT is live instead of
+    ; before one exists. Nothing between here and there is expected to touch
+    ; a low address, but *if* something did, this way it can fault cleanly
+    ; instead of triple-faulting with no diagnostics.
 
     ; 3. Enable SSE & FPU for Rust using full 64-bit register operations
     mov rax, cr0
