@@ -426,6 +426,40 @@ pub unsafe fn protect_boot_memory(kernel_end_addr: usize, heap_start: usize, hea
     pmm.reserve_range(ramdisk_start_frame, ramdisk_frames);
 }
 
+/// Tears down the bootloader's temporary lower-half identity mapping
+/// (PML4[0]) now that a real IDT is live.
+///
+/// `bootloader/src/stage2.s` used to do this itself, right after
+/// switching to the higher-half GDT and before jumping into the
+/// kernel -- but at that point `lidt` had never run, so any fault in
+/// that window couldn't be delivered, escalated to a double fault for
+/// the same reason, and triple-faulted the machine with no
+/// diagnostic output. See the call site in `kmain` (main.rs): this
+/// must run *after* `interrupts::init()` so a fault here produces a
+/// clean panic instead of a silent reset.
+///
+/// # Safety
+/// Must only be called once, after paging is already active with the
+/// bootloader's page tables (true at the point `kmain` calls this).
+/// x86_64 only -- there is no lower-half identity map to remove on
+/// the aarch64 boot path.
+#[cfg(target_arch = "x86_64")]
+pub unsafe fn unmap_low_half_identity_map() {
+    unsafe {
+        let cr3: usize;
+        core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack));
+        let root_phys = cr3 & !0xFFF;
+
+        // PML4[0]: the same entry stage2.s used to zero via its own
+        // higher-half alias of this exact physical address.
+        let pml4_0 = phys_to_virt(root_phys) as *mut u64;
+        core::ptr::write_volatile(pml4_0, 0);
+
+        // Flush the TLB by reloading CR3, same as stage2.s did.
+        core::arch::asm!("mov cr3, {0}", in(reg) cr3);
+    }
+}
+
 /// Explicit initialization entry point
 pub unsafe fn init_memory_subsystem(heap_start: usize, heap_size: usize) {
     unsafe {
