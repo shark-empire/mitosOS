@@ -63,10 +63,45 @@ unsafe extern "C" {
     static _kernel_end: u8;
 }
 
+/// TEMP DIAGNOSTIC: writes one raw byte straight to COM1 (0x3f8), no
+/// LSR polling, no dependency on `uart::Uart` being initialized --
+/// same technique bootloader/src/stage2.s and boot_x86.s already use
+/// for their own checkpoint characters. Exists to tell apart two
+/// things that currently look identical in CI ("[boot] 0: kmain
+/// reached, uart live" never printing): kmain not being entered at
+/// all, vs. kmain being entered but hanging inside `uart::Uart::init()`
+/// or the LSR-empty poll in its first real `write_byte()` call, which
+/// -- unlike this -- can spin forever if that bit never comes back
+/// set. Remove both this and its two call sites in `kmain` once the
+/// hang is found.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+unsafe fn raw_checkpoint(c: u8) {
+    unsafe {
+        core::arch::asm!(
+            "out dx, al",
+            in("dx") 0x3f8u16,
+            in("al") c,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
+}
+
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.entry")]
 pub extern "C" fn kmain() -> ! {
+    // Checkpoint 'A': kmain was entered at all.
+    #[cfg(target_arch = "x86_64")]
+    unsafe { raw_checkpoint(b'A'); }
+
     let mut uart = unsafe { uart::Uart::init() };
+
+    // Checkpoint 'B': Uart::init()'s own register pokes returned --
+    // if 'A' shows up in the log but 'B' doesn't, init() itself is
+    // where things stop, before the LSR poll below is ever reached.
+    #[cfg(target_arch = "x86_64")]
+    unsafe { raw_checkpoint(b'B'); }
+
     // Checkpoint 0: kmain was reached at all, and the UART's own
     // register pokes (GPIO ALT function, baud divisor, FIFO enable)
     // didn't leave it unable to transmit.
