@@ -18,7 +18,7 @@ jobs:
 
           - target: x86_64-unknown-none
             qemu_bin: qemu-system-x86_64
-            qemu_flags: -M pc -m 256M -no-reboot -display none -serial stdio -d int,cpu_reset
+            qemu_flags: -M pc -m 256M -no-reboot -display none -serial stdio
             bin_name: mitosos
 
     steps:
@@ -39,7 +39,6 @@ jobs:
             aarch64-unknown-none
           components: llvm-tools-preview
 
-      # [NEW] Expose rust-objcopy globally so build.sh can use it
       - name: Add llvm-tools to GITHUB_PATH
         run: |
           TOOLCHAIN_BIN=$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | grep host | cut -f2 -d' ')/bin
@@ -59,7 +58,6 @@ jobs:
         if: matrix.target == 'aarch64-unknown-none'
         run: cargo build --release --target ${{ matrix.target }}
 
-      # [NEW] Simplified because rust-objcopy is now in the global PATH
       - name: Prepare boot image (ARM only)
         if: matrix.target == 'aarch64-unknown-none'
         run: rust-objcopy --strip-all -O binary target/${{ matrix.target }}/release/mitosos ${{ matrix.bin_name }}
@@ -77,46 +75,36 @@ jobs:
           if [ "${{ matrix.target }}" = "aarch64-unknown-none" ]; then
             BOOT_ARGS="-kernel kernel8.img"
             TIMEOUT_SEC=180
+            KILL_SPAWNED_ON_EXIT=0
+            QEMU_CMD="${{ matrix.qemu_bin }} ${{ matrix.qemu_flags }} $BOOT_ARGS"
           else
             BOOT_ARGS="-drive file=disk.img,format=raw,index=0,media=disk"
             TIMEOUT_SEC=45
+            KILL_SPAWNED_ON_EXIT=1
+            # x86_64 only: outer guard in case the in-script kill below
+            # ever fails to fire -- this is what actually stops a stuck
+            # boot from hanging the job for 40+ minutes. Left off
+            # aarch64 on purpose.
+            QEMU_CMD="timeout -k 10 $((TIMEOUT_SEC + 30)) ${{ matrix.qemu_bin }} ${{ matrix.qemu_flags }} $BOOT_ARGS"
           fi
 
           ISOLATION_MSG="Terminating isolated task..."
-          # `timeout` here is a belt-and-suspenders guard: the expect
-          # script below kills the QEMU child itself on every exit path,
-          # but if that logic is ever wrong again, this still guarantees
-          # the job can't hang for 40+ minutes waiting on an orphaned
-          # QEMU process.
-          QEMU_CMD="timeout -k 10 $((TIMEOUT_SEC + 30)) ${{ matrix.qemu_bin }} ${{ matrix.qemu_flags }} $BOOT_ARGS"
           INPUT_CMD="run /bin/test_program"
 
           cat << 'EOF' > run_test.exp
-          # Without this, tclsh fully buffers stdout once it's a pipe
-          # (as it is here, feeding `tee`) instead of a terminal. The
-          # kernel's earliest boot checkpoints are single raw characters
-          # with no trailing newline (`out 0x3f8, al`, no polling) --
-          # exactly the case a buffer never flushes until it fills or
-          # the process exits. `expect`'s own pattern matching against
-          # the live QEMU output is unaffected either way (it reads the
-          # spawned process directly), but a hang before that buffer
-          # fills means qemu_output.log -- and this log -- can look
-          # silent even when the kernel already printed several
-          # checkpoints past that point. Costs a little throughput;
-          # worth it for logs that mean what they show.
           fconfigure stdout -buffering none
           set timeout $env(TIMEOUT_SEC)
           spawn sh -c "$env(QEMU_CMD)"
 
-          # `exit` in Expect only ends this Tcl script -- it does NOT
-          # kill a still-running spawned process. Since QEMU's stdout
-          # here is piped through `tee`, an orphaned QEMU left running
-          # after `exit` keeps that pipe open, so the step never
-          # completes: it hangs until something external (a runner-level
-          # timeout, a manual cancel) finally kills it. Route every exit
-          # through this instead of a bare `exit`.
+          # x86_64 only (see KILL_SPAWNED_ON_EXIT above). `exit` in
+          # Expect doesn't kill a still-running spawned process, so on
+          # x86_64 this also kills QEMU before exiting -- otherwise an
+          # orphaned QEMU keeps the `tee` pipe below open and the step
+          # hangs. aarch64 keeps the original bare `exit`, untouched.
           proc bail {code} {
-              catch {exec kill -9 [exp_pid -i $::spawn_id]}
+              if {$env(KILL_SPAWNED_ON_EXIT) eq "1"} {
+                  catch {exec kill -9 [exp_pid -i $::spawn_id]}
+              }
               exit $code
           }
 
@@ -138,15 +126,6 @@ jobs:
           set send_slow {1 .05}
           send -s "$env(INPUT_CMD)\r"
 
-          # `run` spawns the isolated process and returns immediately --
-          # the shell prints its next "mitosOS>" prompt right away, before
-          # the scheduler has even given the new task a timeslice to fault
-          # in. So the prompt can legitimately arrive *before*
-          # ISOLATION_MSG in the stream, not just after it. Watching for
-          # both patterns in one block (via exp_continue, until both have
-          # been seen) accepts either order and still fails on a real
-          # hang, since a real hang means one of the two never shows up
-          # before timeout.
           set got_isolation 0
           set got_prompt 0
 
@@ -184,6 +163,7 @@ jobs:
           export TIMEOUT_SEC
           export INPUT_CMD
           export ISOLATION_MSG
+          export KILL_SPAWNED_ON_EXIT
 
           expect run_test.exp 2>&1 | tee qemu_output.log || true
 
