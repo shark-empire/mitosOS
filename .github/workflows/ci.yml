@@ -102,7 +102,7 @@ jobs:
           # orphaned QEMU keeps the `tee` pipe below open and the step
           # hangs. aarch64 keeps the original bare `exit`, untouched.
           proc bail {code} {
-              if {$env(KILL_SPAWNED_ON_EXIT) eq "1"} {
+              if {$::env(KILL_SPAWNED_ON_EXIT) eq "1"} {
                   catch {exec kill -9 [exp_pid -i $::spawn_id]}
               }
               exit $code
