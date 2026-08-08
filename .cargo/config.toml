@@ -24,6 +24,15 @@ rustflags = [
     "-C", "link-arg=-Tlinker_x86.ld",
     "-C", "relocation-model=static",
     "-C", "code-model=large",
+    # We link via `cc`, not raw ld/lld, so `cc` silently prepends its usual
+    # hosted C-runtime startup objects (crt1.o, crti.o, crtn.o) unless told
+    # not to. -nodefaultlibs (rustc's own default for os="none") only drops
+    # libc/libgcc *libraries* -- crt1.o is a plain object file, not pulled
+    # from a library, so it slips through anyway and its `_start` (which
+    # calls undefined `main`/`__libc_start_main`) wins over ours from
+    # boot_x86.s. -nostartfiles drops all of cc's implicit startup objects,
+    # leaving only our own `_start` + linker_x86.ld's ENTRY(_start).
+    "-C", "link-arg=-nostartfiles",
 ]
 
 # Configuration for Raspberry Pi (AArch64)
