@@ -14,7 +14,7 @@ fn main() {
     // 1. Assemble stage1.s
     let stage1_bin = format!("{}/stage1.bin", out_dir);
     let status = Command::new("nasm")
-        .args(&["-f", "bin", "src/stage1.s", "-o", &stage1_bin])
+        .args(&["-f", "bin", "bootloader/src/stage1.s", "-o", &stage1_bin])
         .status()
         .expect("nasm not found");
     if !status.success() {
@@ -24,7 +24,7 @@ fn main() {
     // 2. Assemble stage2.s (should produce exactly 32KB)
     let stage2_bin = format!("{}/stage2.bin", out_dir);
     let status = Command::new("nasm")
-        .args(&["-f", "bin", "src/stage2.s", "-o", &stage2_bin])
+        .args(&["-f", "bin", "bootloader/src/stage2.s", "-o", &stage2_bin])
         .status()
         .expect("nasm not found");
     if !status.success() {
