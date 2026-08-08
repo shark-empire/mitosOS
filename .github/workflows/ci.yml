@@ -196,3 +196,10 @@ jobs:
           grep -q "mitosOS: kernel_main reached. Boot OK." qemu_output.log
           grep -q "$ISOLATION_MSG" qemu_output.log
           grep -q "mitosOS>" qemu_output.log
+
+      - name: Upload disk image
+        if: matrix.target == 'x86_64-unknown-none'
+        uses: actions/upload-artifact@v4
+        with:
+          name: mitosOS-disk
+          path: disk.img
