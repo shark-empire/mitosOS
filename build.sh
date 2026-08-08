@@ -55,7 +55,12 @@ tar -cf rootfs.tar -C rootfs bin/test_program test.txt
 truncate -s "$RAMDISK_MAX_BYTES" rootfs.tar
 
 echo "==> Building kernel ($KERNEL_TARGET, spec: $KERNEL_TARGET_SPEC)"
-cargo build --release --target "$KERNEL_TARGET_SPEC"
+# -Z json-target-spec: as of a recent nightly Cargo change, loading a custom
+# .json target spec (as opposed to a built-in target name) now requires this
+# explicit opt-in, on top of -Z build-std (already set in .cargo/config.toml).
+# Without it: "error: .json target specs require -Zjson-target-spec to be
+# added to the cargo invocation".
+cargo build --release -Z json-target-spec --target "$KERNEL_TARGET_SPEC"
 
 llvm-objcopy -O binary target/x86_64-unknown-none/release/mitosos kernel.bin
 
