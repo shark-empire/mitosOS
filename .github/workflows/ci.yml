@@ -107,7 +107,7 @@ jobs:
             KILL_SPAWNED_ON_EXIT=0
             QEMU_CMD="${{ matrix.qemu_bin }} ${{ matrix.qemu_flags }} $BOOT_ARGS"
           else
-            BOOT_ARGS="-drive file=disk.img,format=raw,if=ide,index=0,media=disk"
+            BOOT_ARGS="-drive file=disk.img,format=raw,index=0,media=disk"
             TIMEOUT_SEC=45
             KILL_SPAWNED_ON_EXIT=1
             # x86_64 only: outer guard in case the in-script kill below
