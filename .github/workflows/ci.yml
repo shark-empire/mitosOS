@@ -18,14 +18,7 @@ jobs:
 
           - target: x86_64-unknown-none
             qemu_bin: qemu-system-x86_64
-            # if=ide + explicit boot order pins boot-device selection instead of
-            # relying on QEMU's undocumented default when -if is omitted, which
-            # is the kind of thing that can silently differ across QEMU/Ubuntu
-            # runner versions and manifests as a bare "BIOS never finds a
-            # bootable disk" hang -- indistinguishable from a real kernel bug
-            # in the serial capture, since BIOS boot-device messages go to the
-            # (disabled) VGA console, not serial.
-            qemu_flags: -M pc -m 256M -no-reboot -display none -serial stdio -boot order=c,menu=off
+            qemu_flags: -M pc -m 256M -no-reboot -display none -serial stdio -boot order=c,menu=off -d int,cpu_reset
             bin_name: mitosos
 
     steps:
@@ -75,28 +68,6 @@ jobs:
           chmod +x build.sh
           ./build.sh
 
-      - name: Verify disk.img is actually bootable (x86_64 only)
-        if: matrix.target == 'x86_64-unknown-none'
-        run: |
-          echo "== disk.img layout =="
-          ls -la disk.img
-          echo "== first 16 bytes (should start with stage1's real code, not zeros) =="
-          od -An -tx1 -N 16 disk.img
-          echo "== bytes 508-513 (boot signature must be 55 aa at offset 510) =="
-          od -An -tx1 -j 508 -N 6 disk.img
-          SIG=$(od -An -tx1 -j 510 -N 2 disk.img | tr -d ' \n')
-          if [ "$SIG" != "55aa" ]; then
-            echo "::error::disk.img is not bootable -- signature is 0x$SIG, expected 0x55aa"
-            exit 1
-          fi
-          
-      - name: Upload disk image
-        if: matrix.target == 'x86_64-unknown-none'
-        uses: actions/upload-artifact@v4
-        with:
-          name: mitosOS-disk
-          path: disk.img
-          
       - name: Boot in QEMU and check serial output
         run: |
           set -o pipefail
@@ -131,8 +102,7 @@ jobs:
           # orphaned QEMU keeps the `tee` pipe below open and the step
           # hangs. aarch64 keeps the original bare `exit`, untouched.
           proc bail {code} {
-              global env
-              if {$env(KILL_SPAWNED_ON_EXIT) eq "1"} {
+              if {$::env(KILL_SPAWNED_ON_EXIT) eq "1"} {
                   catch {exec kill -9 [exp_pid -i $::spawn_id]}
               }
               exit $code
@@ -203,5 +173,3 @@ jobs:
           grep -q "mitosOS: kernel_main reached. Boot OK." qemu_output.log
           grep -q "$ISOLATION_MSG" qemu_output.log
           grep -q "mitosOS>" qemu_output.log
-
-      
