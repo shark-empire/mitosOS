@@ -12,5 +12,5 @@
   "relocation-model": "static",
   "disable-redzone": true,
   "features": "-mmx,-sse,-sse2,-sse3,-ssse3,-sse4.1,-sse4.2,-3dnow,-avx,+soft-float",
-  "rustc-abi": "x86-softfloat"
+  "rustc-abi": "softfloat"
 }
