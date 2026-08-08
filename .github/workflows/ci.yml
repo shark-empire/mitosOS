@@ -89,7 +89,14 @@ jobs:
             echo "::error::disk.img is not bootable -- signature is 0x$SIG, expected 0x55aa"
             exit 1
           fi
-
+          
+      - name: Upload disk image
+        if: matrix.target == 'x86_64-unknown-none'
+        uses: actions/upload-artifact@v4
+        with:
+          name: mitosOS-disk
+          path: disk.img
+          
       - name: Boot in QEMU and check serial output
         run: |
           set -o pipefail
@@ -197,9 +204,4 @@ jobs:
           grep -q "$ISOLATION_MSG" qemu_output.log
           grep -q "mitosOS>" qemu_output.log
 
-      - name: Upload disk image
-        if: matrix.target == 'x86_64-unknown-none'
-        uses: actions/upload-artifact@v4
-        with:
-          name: mitosOS-disk
-          path: disk.img
+      
