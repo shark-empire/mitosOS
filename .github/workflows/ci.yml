@@ -18,7 +18,14 @@ jobs:
 
           - target: x86_64-unknown-none
             qemu_bin: qemu-system-x86_64
-            qemu_flags: -M pc -m 256M -no-reboot -display none -serial stdio -boot order=c,menu=off -d int,cpu_reset
+            # -cdrom (not a raw disk) + explicit boot order pins boot-device
+            # selection instead of relying on QEMU's undocumented default,
+            # which is the kind of thing that can silently differ across
+            # QEMU/Ubuntu runner versions and manifests as a bare "BIOS
+            # never finds a bootable disk" hang -- indistinguishable from a
+            # real kernel bug in the serial capture, since BIOS boot-device
+            # messages go to the (disabled) VGA console, not serial.
+            qemu_flags: -M pc -m 256M -no-reboot -display none -serial stdio -boot order=d,menu=off
             bin_name: mitosos
 
     steps:
@@ -29,7 +36,7 @@ jobs:
           echo 'Acquire::ForceIPv4 "true";' | sudo tee /etc/apt/apt.conf.d/99force-ipv4
           export DEBIAN_FRONTEND=noninteractive
           sudo apt-get update
-          sudo apt-get install -y qemu-system-arm qemu-system-x86 gcc-aarch64-linux-gnu nasm expect
+          sudo apt-get install -y qemu-system-arm qemu-system-x86 gcc-aarch64-linux-gnu nasm expect xorriso
 
       - name: Setup Rust Nightly Toolchain
         uses: dtolnay/rust-toolchain@nightly
@@ -62,12 +69,39 @@ jobs:
         if: matrix.target == 'aarch64-unknown-none'
         run: rust-objcopy --strip-all -O binary target/${{ matrix.target }}/release/mitosos ${{ matrix.bin_name }}
 
-      - name: Build bootloader + kernel + disk image (x86_64 only)
+      - name: Fetch Limine (x86_64 only)
+        if: matrix.target == 'x86_64-unknown-none'
+        run: |
+          chmod +x fetch_limine.sh
+          ./fetch_limine.sh
+
+      - name: Build kernel + Limine-bootable ISO (x86_64 only)
         if: matrix.target == 'x86_64-unknown-none'
         run: |
           chmod +x build.sh
           ./build.sh
 
+      - name: Verify mitosos.iso is actually bootable (x86_64 only)
+        if: matrix.target == 'x86_64-unknown-none'
+        run: |
+          echo "== mitosos.iso layout =="
+          ls -la mitosos.iso
+          echo "== ISO9660 signature (must be 'CD001' at byte 32769, the Primary Volume Descriptor) =="
+          SIG=$(dd if=mitosos.iso bs=1 skip=32769 count=5 2>/dev/null)
+          if [ "$SIG" != "CD001" ]; then
+            echo "::error::mitosos.iso doesn't look like a real ISO9660 image -- got '$SIG' at byte 32769, expected 'CD001'"
+            exit 1
+          fi
+          echo "== first 16 bytes (Limine's BIOS stage-2 install target) =="
+          od -An -tx1 -N 16 mitosos.iso
+
+      - name: Upload ISO
+        if: matrix.target == 'x86_64-unknown-none'
+        uses: actions/upload-artifact@v4
+        with:
+          name: mitosOS-iso
+          path: mitosos.iso
+          
       - name: Boot in QEMU and check serial output
         run: |
           set -o pipefail
@@ -78,7 +112,7 @@ jobs:
             KILL_SPAWNED_ON_EXIT=0
             QEMU_CMD="${{ matrix.qemu_bin }} ${{ matrix.qemu_flags }} $BOOT_ARGS"
           else
-            BOOT_ARGS="-drive file=disk.img,format=raw,index=0,media=disk"
+            BOOT_ARGS="-cdrom mitosos.iso"
             TIMEOUT_SEC=45
             KILL_SPAWNED_ON_EXIT=1
             # x86_64 only: outer guard in case the in-script kill below
@@ -102,7 +136,8 @@ jobs:
           # orphaned QEMU keeps the `tee` pipe below open and the step
           # hangs. aarch64 keeps the original bare `exit`, untouched.
           proc bail {code} {
-              if {$::env(KILL_SPAWNED_ON_EXIT) eq "1"} {
+              global env
+              if {$env(KILL_SPAWNED_ON_EXIT) eq "1"} {
                   catch {exec kill -9 [exp_pid -i $::spawn_id]}
               }
               exit $code
@@ -173,3 +208,5 @@ jobs:
           grep -q "mitosOS: kernel_main reached. Boot OK." qemu_output.log
           grep -q "$ISOLATION_MSG" qemu_output.log
           grep -q "mitosOS>" qemu_output.log
+
+      
