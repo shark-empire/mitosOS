@@ -3,7 +3,8 @@
 //! Responsible for discovering hardware tables provided by the firmware.
 
 use core::mem;
-use limine::request::AcpiRequest;
+use crate::limine::request::AcpiRequest;
+
 
 /// The Limine ACPI request. The bootloader will fill this with the RSDP address.
 #[used]
