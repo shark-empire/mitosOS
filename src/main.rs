@@ -231,34 +231,6 @@ fn kmain_common() -> ! {
     let _ = writeln!(uart, "mitosOS: kernel_main reached. Boot OK.");
 
     
-    // --- ACPI Initialization (Limine) ---
-    #[cfg(target_arch = "x86_64")]
-    {
-        match crate::hal::acpi::get_limine_rsdp() {
-            Ok(rsdp_addr) => {
-                let _ = writeln!(uart, "mitosOS: Limine RSDP found at virtual 0x{:X}", rsdp_addr);
-                match crate::hal::acpi::parse_rsdp(rsdp_addr) {
-                    Ok(table_phys_addr) => {
-                        let _ = writeln!(
-                            uart, 
-                            "mitosOS: ACPI Root Table (RSDT/XSDT) found at physical 0x{:X}", 
-                            table_phys_addr
-                        );
-                        // Future: Pass table_phys_addr to your AML parser here
-                    },
-                    Err(e) => {
-                        let _ = writeln!(uart, "mitosOS: WARN Failed to parse RSDP: {}", e);
-                    }
-                }
-            },
-            Err(e) => {
-                let _ = writeln!(uart, "mitosOS: WARN ACPI Error: {}", e);
-            }
-        }
-    }
-
-
-    
 #[cfg(target_arch = "x86_64")]
 {
  let scan_pci_devices = crate::pci::scan_buses();
