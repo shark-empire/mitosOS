@@ -3,9 +3,9 @@
 target = "x86_64-unknown-none.json"
 
 [unstable]
-build-std = ["core", "alloc"]
-# Remove "compiler-builtins-mem" from build-std-features:
-build-std-features = []
+build-std = ["core", "alloc", "compiler-builtins"]
+
+build-std-features = ["compiler-builtins-mem"]
 
 
 [target.x86_64-unknown-none]
