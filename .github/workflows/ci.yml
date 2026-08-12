@@ -36,7 +36,7 @@ jobs:
           echo 'Acquire::ForceIPv4 "true";' | sudo tee /etc/apt/apt.conf.d/99force-ipv4
           export DEBIAN_FRONTEND=noninteractive
           sudo apt-get update
-          sudo apt-get install -y qemu-system-arm qemu-system-x86 gcc-aarch64-linux-gnu nasm expect xorriso
+          sudo apt-get install -y qemu-system-arm qemu-system-x86 gcc-aarch64-linux-gnu nasm expect xorriso grub-pc-bin grub-common mtools
 
       - name: Setup Rust Nightly Toolchain
         uses: dtolnay/rust-toolchain@nightly
@@ -208,5 +208,113 @@ jobs:
           grep -q "mitosOS: kernel_main reached. Boot OK." qemu_output.log
           grep -q "$ISOLATION_MSG" qemu_output.log
           grep -q "mitosOS>" qemu_output.log
+
+      - name: Build GRUB Multiboot2 ISO (x86_64 only, bypasses Limine entirely)
+        if: matrix.target == 'x86_64-unknown-none'
+        run: |
+          # Same kernel ELF + ramdisk as mitosos.iso, but boots via GRUB's
+          # real Multiboot2 loader instead of Limine. Purely a diagnostic:
+          # if THIS boots but mitosos.iso doesn't, the bug is specific to
+          # Limine (its config parsing, its ELF loading, its module
+          # handling, ...). If THIS also hangs, the bug is in kernel code
+          # shared by both paths (boot_multiboot2.s onward, or later).
+          #
+          # NOTE: deliberately GRUB, not QEMU's own `-kernel` flag -- QEMU's
+          # built-in multiboot loader only understands Multiboot v1 (magic
+          # 0x1BADB002), never Multiboot2 (0xe85250d6, what this kernel's
+          # header actually uses), so `-kernel mitosos.elf` would just fail
+          # to find a header it recognises rather than testing anything.
+          mkdir -p grub_iso/boot/grub
+          cp iso_root/boot/mitosos.elf grub_iso/boot/mitosos.elf
+          cp iso_root/boot/rootfs.tar grub_iso/boot/rootfs.tar
+          cat << 'EOF' > grub_iso/boot/grub/grub.cfg
+          set timeout=0
+          set default=0
+          menuentry "mitosOS (Multiboot2 via GRUB, no Limine)" {
+              multiboot2 /boot/mitosos.elf
+              module2 /boot/rootfs.tar
+              boot
+          }
+          EOF
+          grub-mkrescue -o mitosos-grub.iso grub_iso
+
+      - name: Boot test via GRUB Multiboot2 (x86_64 only, bypasses Limine)
+        if: matrix.target == 'x86_64-unknown-none'
+        run: |
+          set -o pipefail
+
+          QEMU_CMD="timeout -k 10 40 qemu-system-x86_64 -M pc -m 256M -no-reboot -display none -serial stdio -boot order=d,menu=off -cdrom mitosos-grub.iso"
+
+          cat << 'EOF' > run_test_grub.exp
+          fconfigure stdout -buffering none
+          set timeout 35
+          spawn sh -c "$env(QEMU_CMD)"
+
+          proc bail {code} {
+              catch {exec kill -9 [exp_pid -i $::spawn_id]}
+              exit $code
+          }
+
+          expect {
+              "mitosOS: kernel_main reached. Boot OK." {
+                  puts "\n> CI: Multiboot2/GRUB boot confirmed! Waiting 2 seconds for shell..."
+                  sleep 2
+              }
+              eof {
+                  puts "\n> CI: Error: QEMU exited unexpectedly (likely a triple fault)!"
+                  bail 1
+              }
+              timeout {
+                  puts "\n> CI: Error: Timed out waiting for kernel to boot via GRUB/Multiboot2."
+                  bail 1
+              }
+          }
+
+          set send_slow {1 .05}
+          send -s "run /bin/test_program\r"
+
+          set got_isolation 0
+          set got_prompt 0
+
+          expect {
+              "Terminating isolated task..." {
+                  set got_isolation 1
+                  puts "\n> CI: User-mode fault successfully isolated."
+                  if {!$got_prompt} { exp_continue }
+              }
+              "mitosOS>" {
+                  set got_prompt 1
+                  puts "\n> CI: Shell prompt seen."
+                  if {!$got_isolation} { exp_continue }
+              }
+              eof {
+                  puts "\n> CI: Error: QEMU crashed or exited unexpectedly!"
+                  bail 1
+              }
+              timeout {
+                  if {!$got_isolation} {
+                      puts "\n> CI: Error: Timed out waiting for task termination message."
+                  } else {
+                      puts "\n> CI: Error: Shell did not return after fault. OS likely hung."
+                  }
+                  bail 1
+              }
+          }
+
+          puts "\n> CI: Shell survived the fault via GRUB/Multiboot2 boot too! Test passed."
+          sleep 1
+          bail 0
+          EOF
+
+          export QEMU_CMD
+
+          expect run_test_grub.exp 2>&1 | tee qemu_output_grub.log || true
+
+          echo "----- captured GRUB/Multiboot2 serial output -----"
+          cat qemu_output_grub.log
+
+          grep -q "mitosOS: kernel_main reached. Boot OK." qemu_output_grub.log
+          grep -q "Terminating isolated task..." qemu_output_grub.log
+          grep -q "mitosOS>" qemu_output_grub.log
 
       
