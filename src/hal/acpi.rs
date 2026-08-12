@@ -7,7 +7,7 @@ use limine::request::AcpiRequest;
 
 /// The Limine ACPI request. The bootloader will fill this with the RSDP address.
 #[used]
-#[link_section = ".requests"]
+#[unsafe(link_section = ".requests")]
 static ACPI_REQUEST: AcpiRequest = AcpiRequest::new();
 
 /// See `memory::phys_to_virt`'s doc comment.
