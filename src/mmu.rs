@@ -3,8 +3,9 @@
 
 
 // x86_64 never needs a file like this: long mode *requires* paging, so
-// the two-stage bootloader (stage1.s/stage2.s) already has the MMU on
-// -- an identity map loaded into CR3 -- before kmain ever runs.
+// whatever got the kernel here (Limine, or the Multiboot2 trampoline in
+// src/boot_multiboot2.s) already has the MMU on -- some identity map
+// loaded into CR3 -- before kmain ever runs.
 // AArch64's boot.s does nothing but set sp and jump straight to kmain.
 // The MMU has been off this whole time, which means every
 // `msr ttbr0_el1` in task::run_schedule and every

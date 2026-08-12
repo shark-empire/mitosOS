@@ -33,6 +33,13 @@ pub mod hal;
 pub mod gdt;
 #[cfg(target_arch = "aarch64")]
 pub mod mmu;
+// Limine boot protocol support -- see src/limine.rs.
+#[cfg(target_arch = "x86_64")]
+pub mod limine;
+// Bootloader-agnostic layer over limine.rs + the Multiboot2 info
+// structure -- see src/boot_info.rs.
+#[cfg(target_arch = "x86_64")]
+pub mod boot_info;
 
 use core::fmt::Write;
 use core::panic::PanicInfo;
@@ -43,9 +50,11 @@ use alloc::boxed::Box;
 
 const HEAP_START: usize = 0x150_000;
 
-// x86_64's own bootloader-built identity map (stage2.s) is ~4MiB, so
-// this has to stay comfortably inside that regardless of what AArch64
-// needs -- proven working as-is, not touched.
+// x86_64's heap needs to stay within whatever the current boot
+// protocol's identity/HHDM-style mapping actually covers -- at least
+// the first 1GiB either way (Limine's HHDM covers considerably more;
+// see memory::HHDM_OFFSET's doc comment) -- so 640KB starting at 1.3MB
+// is comfortably conservative on any of them.
 #[cfg(target_arch = "x86_64")]
 const HEAP_SIZE: usize = 0xA0_000; // 640KB
 
@@ -65,7 +74,7 @@ unsafe extern "C" {
 
 /// TEMP DIAGNOSTIC: writes one raw byte straight to COM1 (0x3f8), no
 /// LSR polling, no dependency on `uart::Uart` being initialized --
-/// same technique bootloader/src/stage2.s and boot_x86.s already use
+/// same technique boot_x86.s and boot_multiboot2.s use for their own
 /// for their own checkpoint characters. Exists to tell apart two
 /// things that currently look identical in CI ("[boot] 0: kmain
 /// reached, uart live" never printing): kmain not being entered at
@@ -87,9 +96,38 @@ unsafe fn raw_checkpoint(c: u8) {
     }
 }
 
+// _start (boot_x86.s) is reachable two ways on x86_64 -- Limine, and
+// Multiboot2 (see boot_multiboot2.s) -- and forwards whatever it was
+// entered with straight through into this call, untouched. Only a
+// Multiboot2 boot puts anything meaningful there (the info pointer and
+// the 0x36d76289 magic, relayed via boot_multiboot2.s); Limine
+// guarantees every register is zero at entry, so both parameters are
+// harmless noise on that path. aarch64 has no equivalent (Multiboot2/
+// Limine are BIOS/UEFI-PC and UEFI concepts; the Raspberry Pi target
+// boots through the SoC's own firmware instead), so it keeps the
+// original no-argument signature.
+#[cfg(target_arch = "x86_64")]
+#[unsafe(no_mangle)]
+#[unsafe(link_section = ".text.entry")]
+pub extern "C" fn kmain(boot_arg0: u64, boot_arg1: u64) -> ! {
+    // Must be the very first thing that runs, before even gdt::init()
+    // a few lines into kmain_common: this is the only place that
+    // calls memory::set_hhdm_offset, which nearly everything else in
+    // the kernel eventually needs correct (via memory::phys_to_virt)
+    // to dereference *any* physical address -- see that function's
+    // doc comment, and boot_info::init's.
+    boot_info::init(boot_arg0, boot_arg1);
+    kmain_common()
+}
+
+#[cfg(target_arch = "aarch64")]
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.entry")]
 pub extern "C" fn kmain() -> ! {
+    kmain_common()
+}
+
+fn kmain_common() -> ! {
     // Checkpoint 'A': kmain was entered at all.
     #[cfg(target_arch = "x86_64")]
     unsafe { raw_checkpoint(b'A'); }
@@ -107,6 +145,21 @@ pub extern "C" fn kmain() -> ! {
     // didn't leave it unable to transmit.
     let _ = writeln!(uart, "[boot] 0: kmain reached, uart live");
 
+    #[cfg(target_arch = "x86_64")]
+    {
+        let _ = writeln!(uart, "mitosOS: booted via {}", boot_info::protocol_name());
+        if boot_info::protocol() == boot_info::BootProtocol::Unknown {
+            let _ = writeln!(uart, "mitosOS: WARN neither Limine nor Multiboot2 detected at entry");
+        }
+        if let Some((entries, usable_bytes)) = boot_info::memmap_summary() {
+            let _ = writeln!(
+                uart,
+                "mitosOS: bootloader memory map: {entries} entries, {} KiB usable",
+                usable_bytes / 1024
+            );
+        }
+    }
+
     unsafe {
         // 1. Load the kernel's own GDT/TSS (ring-3 segments + the stack
         //    the CPU uses on any trap taken from ring 3). Must run before
@@ -121,11 +174,15 @@ pub extern "C" fn kmain() -> ! {
         interrupts::init();
         let _ = writeln!(uart, "[boot] 1: interrupts::init() returned");
 
-        // 2b. Tear down the bootloader's temporary lower-half identity
-        //     mapping now that a real IDT is live -- see
-        //     memory::unmap_low_half_identity_map's doc comment for why
-        //     this moved out of stage2.s and has to run after
-        //     interrupts::init(), not before it.
+        // 2b. Tear down PML4[0]'s temporary identity mapping now that a
+        //     real IDT is live. On a Multiboot2 boot this is real: it
+        //     removes the mapping boot_multiboot2.s's trampoline built
+        //     to survive the paging-enable transition. On a Limine
+        //     boot it's a harmless no-op -- base revision 3 (what this
+        //     kernel requests) doesn't put anything at PML4[0] to begin
+        //     with. See memory::unmap_low_half_identity_map's doc
+        //     comment for why this has to run after interrupts::init(),
+        //     not before it, either way.
         #[cfg(target_arch = "x86_64")]
         memory::unmap_low_half_identity_map();
 
@@ -137,7 +194,21 @@ pub extern "C" fn kmain() -> ! {
         // chance to call vmm_alloc_frame() -- it used to run much later
         // (after PCI scan, a demo allocation, and AHCI init), so all of
         // those were freely handing out frames from the "reserved" range.
-        protect_boot_memory(&raw const _kernel_end as usize, HEAP_START, HEAP_SIZE);
+        let kernel_end_addr = &raw const _kernel_end as usize;
+        #[cfg(target_arch = "x86_64")]
+        {
+            let kernel_phys_start = boot_info::kernel_phys_start();
+            let kernel_phys_end = kernel_phys_start + (kernel_end_addr - boot_info::KERNEL_VMA);
+            protect_boot_memory(
+                kernel_phys_start,
+                kernel_phys_end,
+                HEAP_START,
+                HEAP_SIZE,
+                boot_info::module(),
+            );
+        }
+        #[cfg(target_arch = "aarch64")]
+        protect_boot_memory(0, kernel_end_addr, HEAP_START, HEAP_SIZE, None);
         let _ = writeln!(uart, "[boot] 2: memory subsystem + protect_boot_memory done");
 
         // 3c. Bring the MMU up (AArch64 only)
@@ -193,7 +264,19 @@ if let Some(frame) = crate::memory::alloc_frame() {
         }
         #[cfg(target_arch = "x86_64")]
         {
-            unsafe { ramdisk::TarFileSystem::new(0x200_000, 0x20_000) }
+            // The ramdisk is loaded as a module -- Limine's
+            // limine.conf `module_path`, or a Multiboot2 module tag --
+            // rather than living at a fixed address; see boot_info::module().
+            match boot_info::module() {
+                Some((addr, size)) => unsafe { ramdisk::TarFileSystem::new(addr, size) },
+                None => {
+                    let _ = writeln!(
+                        uart,
+                        "mitosOS: WARN no ramdisk module from bootloader (check limine.conf's module_path)"
+                    );
+                    None
+                }
+            }
         }
     };
 
@@ -217,22 +300,39 @@ if let Some(frame) = crate::memory::alloc_frame() {
     const FB_HEIGHT: usize = 768;
     const FB_PITCH: usize = 4096;
 
-    let mut fb = unsafe {
-        // Identity-map the framebuffer's MMIO pages before anything touches them
-        let cr3: usize;
-        core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack));
-        let page_table_root = cr3 & !0xFFF;
+    // The bootloader reports the real framebuffer geometry when it
+    // finds one (boot_info::framebuffer()); the constants above are a
+    // last-resort fallback for the unexpected case where it doesn't --
+    // kept in case there's still a usable linear framebuffer at the
+    // address a "-vga std"-style QEMU session conventionally uses.
+    let reported_fb = boot_info::framebuffer();
+    let (addr, width, height, pitch, needs_mapping) =
+        reported_fb.unwrap_or((FB_ADDR, FB_WIDTH, FB_HEIGHT, FB_PITCH, true));
 
-        let fb_pages = (FB_PITCH * FB_HEIGHT + 0xFFF) / 0x1000;
-        for i in 0..fb_pages {
-            let addr = FB_ADDR + i * 0x1000;
-            if let Err(e) = crate::memory::map_page(page_table_root, addr, addr) {
-                let _ = writeln!(uart, "mitosOS: WARN framebuffer mapping failed: {e}");
-                break;
+    let mut fb = unsafe {
+        if reported_fb.is_none() {
+            let _ = writeln!(uart, "mitosOS: WARN no framebuffer from bootloader, trying fallback address");
+        }
+        if needs_mapping {
+            // Identity-map the framebuffer's MMIO pages before anything
+            // touches them. Limine's own framebuffer response is always
+            // already mapped (HHDM); a Multiboot2 one is not, and neither
+            // is the last-resort fallback above -- see boot_info::framebuffer().
+            let cr3: usize;
+            core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack));
+            let page_table_root = cr3 & !0xFFF;
+
+            let fb_pages = (pitch * height + 0xFFF) / 0x1000;
+            for i in 0..fb_pages {
+                let page_addr = addr + i * 0x1000;
+                if let Err(e) = crate::memory::map_page(page_table_root, page_addr, page_addr) {
+                    let _ = writeln!(uart, "mitosOS: WARN framebuffer mapping failed: {e}");
+                    break;
+                }
             }
         }
 
-        Framebuffer::new(FB_ADDR, FB_WIDTH, FB_HEIGHT, FB_PITCH)
+        Framebuffer::new(addr, width, height, pitch)
     };
 
     fb.clear(Color::BLACK);

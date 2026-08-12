@@ -80,14 +80,19 @@ _start:
     ; BSS-zeroing above is done, so this no longer overlaps with it.
     ; RIP-relative so this is correct regardless of where the
     ; bootloader physically loaded us, as long as we're executing from
-    ; our linked address (we are: stage2.s jumps to
-    ; KERNEL_VIRT_LOAD_ADDR, matching linker_x86.ld exactly).
+    ; our linked address (we are: Limine jumps straight here per
+    ; ENTRY(_start), and boot_multiboot2.s's trampoline jumps here
+    ; too, only after reaching that same linked address itself --
+    ; matching linker_x86.ld exactly either way).
     lea rsp, [rel stack_top]
 
-    ; 4. Restore bootloader arguments for Rust's kmain. kmain() doesn't
-    ; currently take any parameters, so this is presently unobserved --
-    ; kept correct anyway so a future boot-info parameter doesn't
-    ; silently receive clobbered registers instead of real values.
+    ; 4. Restore bootloader arguments for Rust's kmain. On x86_64,
+    ; kmain(arg0: u64, arg1: u64) -- see main.rs -- actually reads
+    ; these now: a Multiboot2 boot relays its info pointer and magic
+    ; through here (boot_multiboot2.s sets rdi/rsi right before
+    ; jumping to this file), which boot_info::init uses to tell
+    ; Multiboot2 apart from Limine (which guarantees every register
+    ; zero at entry, so both arrive as 0 on that path).
     mov rdi, r10
     mov rcx, r11
     mov rax, r12

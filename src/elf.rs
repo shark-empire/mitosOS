@@ -206,10 +206,9 @@ unsafe fn map_and_copy_segment(
                 // whatever called spawn_from_elf. phys_frame on its own
                 // is a bare physical address: dereferenceable as-is on
                 // AArch64 (mmu.rs's permanent identity map), but not on
-                // x86_64, where stage2.s deliberately unmaps the low
-                // identity mapping before Rust ever runs -- see
-                // `memory::phys_to_virt`'s doc comment. Translating it
-                // works on both.
+                // x86_64, where there is no permanent identity map --
+                // see `memory::phys_to_virt`'s doc comment. Translating
+                // it works on both.
                 let dest_ptr = crate::memory::phys_to_virt(phys_frame + copy_start_in_page) as *mut u8;
                 core::ptr::copy_nonoverlapping(
                     data[data_offset..data_offset + bytes_to_copy].as_ptr(),

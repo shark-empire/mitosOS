@@ -127,7 +127,7 @@ pub fn init_ahci_devices(uart: &mut impl Write) {
             // higher-half alias every other physical-memory access in
             // this kernel uses (see that function's doc comment for
             // why a bare physical address isn't dereferenceable here).
-            let mut hal = KernelHal { phys_mem_offset: crate::memory::PHYS_VIRT_OFFSET as u64 };
+            let mut hal = KernelHal { phys_mem_offset: crate::memory::hhdm_offset() as u64 };
 
             match unsafe { AhciController::new(abar_phys, &mut hal) } {
                 Ok(mut ahci_controller) => {

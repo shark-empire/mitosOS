@@ -1,12 +1,16 @@
 //! src/gdt.rs -- x86_64-only. Declare with `#[cfg(target_arch = "x86_64")]
 //! pub mod gdt;` in main.rs (same pattern as `pci`), not a bare `mod gdt;`.
 //!
-//! The bootloader (bootloader/src/stage2.s) builds a minimal GDT just to
-//! get into long mode -- null / ring-0 code / ring-0 data, nothing else --
-//! and the kernel has been running on that ever since. It has no ring-3
-//! segments and no TSS, which is the real reason every task so far runs at
-//! full kernel privilege (see task.rs::Task::init hardcoding cs=0x08,
-//! ss=0x10 for every task, "isolated" or not).
+//! Whatever bootloader got the kernel here builds only a minimal GDT of
+//! its own, just enough to reach long mode -- null / ring-0 code /
+//! ring-0 data, nothing else -- and this module replaces it outright
+//! (see `init` below: it builds and loads its own GDT unconditionally,
+//! never reads whatever was active first) with a permanent one that
+//! adds ring-3 segments and a TSS. Until this runs, there's no ring-3
+//! or TSS, which is the real reason every task so far runs at full
+//! kernel privilege (see task.rs::Task::init hardcoding cs=0x08,
+//! ss=0x10 for every task, "isolated" or not) -- 0x08/0x10 being this
+//! module's own choice of selector layout, not the bootloader's.
 //!
 //! This module gives the kernel its own permanent GDT with:
 //!   - the SAME selectors 0x08 / 0x10 for ring-0 code/data, so nothing

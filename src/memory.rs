@@ -4,23 +4,36 @@ use core::alloc::{GlobalAlloc, Layout};
 use core::cell::UnsafeCell;
 use core::ptr;
 use core::sync::atomic::{AtomicBool, Ordering};
+#[cfg(target_arch = "x86_64")]
+use core::sync::atomic::AtomicUsize;
 
 // =========================================================================
 // 0. PHYSICAL <-> VIRTUAL TRANSLATION
 // =========================================================================
 //
-// This kernel is higher-half only on x86_64: bootloader/src/stage2.s
-// builds a *temporary* identity mapping to get from real mode into long
-// mode, then deliberately tears it down (zeroes PML4[0], flushes the
-// TLB) immediately before jumping into Rust, as a hardening step. From
-// that point on, a bare physical address -- straight off CR3, a fresh
-// `vmm_alloc_frame()`, or a `PageTableEntry::physical_address()` -- is
-// *not* a valid pointer, unlike a design that keeps everything
-// identity-mapped forever. Every physical address this kernel ever
-// needs to dereference sits inside the first ~1GB of RAM (the frame
-// allocator, the heap, and every page table this kernel builds all
-// live there), which the *permanent* higher-half alias at PML4 index
-// 256 covers 1:1, so this fixed offset is always enough.
+// This kernel is higher-half only on x86_64, and needs a way to turn a
+// bare physical address (straight off CR3, a fresh `vmm_alloc_frame()`,
+// a `PageTableEntry::physical_address()`, ...) into a dereferenceable
+// pointer -- there is no permanent identity map. Unlike a fixed
+// compile-time offset, this can't be a constant: which offset is
+// correct depends on which bootloader is in play, and for Limine it's
+// a bootloader-chosen value only known at runtime.
+//
+// - Limine boots (src/limine.rs): Limine provides its own Higher Half
+//   Direct Map (HHDM) at an offset of ITS choosing -- the protocol is
+//   explicit that this "may vary between boots" and must be queried,
+//   never assumed. main.rs queries it (limine::hhdm_offset()) and
+//   calls `set_hhdm_offset` with the real value before anything else
+//   runs that might dereference a physical address.
+// - Multiboot2 boots (src/boot_multiboot2.s): the trampoline's own
+//   identity-mapping page tables additionally mirror physical [0,
+//   1GiB) at PML4 index 256 (the same slot, and same 0xFFFF800000000000
+//   virtual base, this offset defaults to below) -- specifically so
+//   that default is already correct and nothing needs to call
+//   `set_hhdm_offset` on that path at all. See that file's comments
+//   for why this is a second, persistent alias rather than reusing
+//   the (deliberately temporary -- see `unmap_low_half_identity_map`)
+//   identity mapping at PML4[0] directly.
 //
 // AArch64 doesn't need any of this: mmu.rs keeps a permanent flat
 // identity map (kernel RAM + MMIO, all under L0 index 0) that is never
@@ -28,20 +41,39 @@ use core::sync::atomic::{AtomicBool, Ordering};
 // there. `phys_to_virt` is a no-op on that target -- every call site
 // below can use it unconditionally without `#[cfg]`.
 
-/// Higher-half offset used by every physical address this kernel
-/// hands the CPU as a pointer on x86_64. Matches the alias
-/// bootloader/src/stage2.s builds at PML4[256] (see `higher_half_entry`).
+/// Current physical->virtual offset for x86_64. Defaults to the
+/// address Multiboot2 boots need (see the module comment); Limine
+/// boots override this via `set_hhdm_offset` with the bootloader's
+/// actual (and boot-to-boot variable) HHDM offset before anything
+/// else runs that might call `phys_to_virt`.
 #[cfg(target_arch = "x86_64")]
-pub const PHYS_VIRT_OFFSET: usize = 0xFFFF_8000_0000_0000;
+pub static HHDM_OFFSET: AtomicUsize = AtomicUsize::new(0xFFFF_8000_0000_0000);
+
+/// Sets the offset `phys_to_virt` uses from this point on. Must be
+/// called, if at all, before anything might call `phys_to_virt` --
+/// which in practice means as close to the top of kmain as possible.
+/// See the module comment: only a Limine boot needs to call this.
+#[cfg(target_arch = "x86_64")]
+pub fn set_hhdm_offset(offset: usize) {
+    HHDM_OFFSET.store(offset, Ordering::SeqCst);
+}
+
+/// Current physical->virtual offset (see `set_hhdm_offset`). Exists so
+/// other modules that need the raw offset itself (pci.rs's DMA/HAL
+/// setup, currently) don't reach into the atomic directly.
+#[cfg(target_arch = "x86_64")]
+pub fn hhdm_offset() -> usize {
+    HHDM_OFFSET.load(Ordering::SeqCst)
+}
 
 /// Turns a physical address into a pointer the CPU can dereference
 /// right now. See the module-level comment above for why this is
 /// needed on x86_64 and a no-op on aarch64.
 #[inline(always)]
-pub const fn phys_to_virt(phys: usize) -> usize {
+pub fn phys_to_virt(phys: usize) -> usize {
     #[cfg(target_arch = "x86_64")]
     {
-        phys | PHYS_VIRT_OFFSET
+        phys + HHDM_OFFSET.load(Ordering::SeqCst)
     }
     #[cfg(target_arch = "aarch64")]
     {
@@ -388,27 +420,42 @@ pub unsafe fn map_page(page_table_root: usize, vaddr: usize, paddr: usize) -> Re
 
 /// Protects boot and kernel memory from being allocated by the VMM.
 ///
-/// `kernel_end_addr` should be the *real* end of the kernel's own image
-/// (e.g. the linker-provided `_kernel_end` symbol), not a guess -- this
-/// used to be called with a hardcoded `0x100000` placeholder, which is
-/// actually where the kernel *starts*. That left the frame allocator
-/// free to hand out the very first physical frame it owns (the kernel's
-/// own code/data), silently corrupting the running kernel the moment
-/// anything called `vmm_alloc_frame()` for a new page table, an ELF
-/// segment, a DMA buffer, etc.
+/// `kernel_phys_start`/`kernel_phys_end` must be the kernel's own
+/// *physical* extent. On x86_64 this can't be assumed -- Limine
+/// picks its own physical placement for the loaded image (query it
+/// via `limine::executable_address()`; Multiboot2 boots always land
+/// at `KERNEL_LMA_BASE`/1MiB, see linker_x86.ld) -- passing a virtual
+/// address here (`_kernel_end` on its own, unadjusted, is one) or
+/// assuming a fixed start left the frame allocator free to hand out
+/// the kernel's own running code/data, silently corrupting it the
+/// moment anything called `vmm_alloc_frame()`. On aarch64, physical
+/// == virtual (mmu.rs's permanent identity map), so `_kernel_end`
+/// directly and `kernel_phys_start = 0` (reproducing this function's
+/// previous, aarch64-only-correct behavior of just reserving
+/// everything from address 0) are both fine as-is.
 ///
 /// `heap_start`/`heap_size` should match whatever's passed to
-/// `init_memory_subsystem` -- the heap lives at a fixed physical range
-/// too (this kernel has no higher-half split, so physical == virtual
-/// here), and the frame allocator needs to know to stay out of it for
-/// the same reason.
-pub unsafe fn protect_boot_memory(kernel_end_addr: usize, heap_start: usize, heap_size: usize) {
+/// `init_memory_subsystem`.
+///
+/// `ramdisk`, if the bootloader provided one (`limine::first_module()`
+/// or its Multiboot2 equivalent), is the ramdisk's own physical
+/// (address, size) -- without this, the frame allocator can hand out
+/// the ramdisk's memory to something else, corrupting the mounted
+/// filesystem's headers.
+pub unsafe fn protect_boot_memory(
+    kernel_phys_start: usize,
+    kernel_phys_end: usize,
+    heap_start: usize,
+    heap_size: usize,
+    ramdisk: Option<(usize, usize)>,
+) {
     let mut pmm = PHYSICAL_PMM.lock();
-    pmm.reserve_range(0, 256); // Reserve first 1MB (BIOS/Stage1/Stage2)
+    pmm.reserve_range(0, 256); // First 1MiB: BIOS/EBDA and other fixed low-memory structures.
 
-    let kernel_end_frame = (kernel_end_addr + 4095) / 4096;
-    if kernel_end_frame > 256 {
-        pmm.reserve_range(256, kernel_end_frame - 256);
+    let kernel_start_frame = kernel_phys_start / PAGE_SIZE;
+    let kernel_end_frame = (kernel_phys_end + PAGE_SIZE - 1) / PAGE_SIZE;
+    if kernel_end_frame > kernel_start_frame {
+        pmm.reserve_range(kernel_start_frame, kernel_end_frame - kernel_start_frame);
     }
 
     let heap_start_frame = heap_start / PAGE_SIZE;
@@ -417,26 +464,30 @@ pub unsafe fn protect_boot_memory(kernel_end_addr: usize, heap_start: usize, hea
         pmm.reserve_range(heap_start_frame, heap_end_frame - heap_start_frame);
     }
 
-    // UPGRADE: Protect the Ramdisk loaded by stage2.s at 2MB (0x200000)
-    // Stage2 loads up to 128KB of ramdisk data (256 sectors).
-    // Without this, the physical frame allocator hands out the ramdisk 
-    // memory to other processes, zeroing out the TAR filesystem headers.
-    let ramdisk_start_frame = 0x200000 / PAGE_SIZE;
-    let ramdisk_frames = 256 * 512 / PAGE_SIZE;
-    pmm.reserve_range(ramdisk_start_frame, ramdisk_frames);
+    if let Some((ramdisk_addr, ramdisk_size)) = ramdisk {
+        let ramdisk_start_frame = ramdisk_addr / PAGE_SIZE;
+        let ramdisk_end_frame = (ramdisk_addr + ramdisk_size + PAGE_SIZE - 1) / PAGE_SIZE;
+        if ramdisk_end_frame > ramdisk_start_frame {
+            pmm.reserve_range(ramdisk_start_frame, ramdisk_end_frame - ramdisk_start_frame);
+        }
+    }
 }
 
-/// Tears down the bootloader's temporary lower-half identity mapping
-/// (PML4[0]) now that a real IDT is live.
+/// Tears down the temporary lower-half identity mapping (PML4[0]) now
+/// that a real IDT is live.
 ///
-/// `bootloader/src/stage2.s` used to do this itself, right after
-/// switching to the higher-half GDT and before jumping into the
-/// kernel -- but at that point `lidt` had never run, so any fault in
-/// that window couldn't be delivered, escalated to a double fault for
-/// the same reason, and triple-faulted the machine with no
-/// diagnostic output. See the call site in `kmain` (main.rs): this
-/// must run *after* `interrupts::init()` so a fault here produces a
-/// clean panic instead of a silent reset.
+/// This has to run *after* `interrupts::init()` (see the call site in
+/// `kmain`, main.rs): before that, `lidt` has never run, so any fault
+/// in this window can't be delivered, escalates to a double fault for
+/// the same reason, and triple-faults the machine with no diagnostic
+/// output. Running it here instead means a fault produces a clean
+/// panic.
+///
+/// On a Multiboot2 boot this removes a real mapping --
+/// boot_multiboot2.s's trampoline builds one to survive the
+/// paging-enable transition. On a Limine boot it's a harmless no-op:
+/// base revision 3 (what this kernel requests) doesn't put anything
+/// at PML4[0] to begin with.
 ///
 /// # Safety
 /// Must only be called once, after paging is already active with the
@@ -450,12 +501,14 @@ pub unsafe fn unmap_low_half_identity_map() {
         core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack));
         let root_phys = cr3 & !0xFFF;
 
-        // PML4[0]: the same entry stage2.s used to zero via its own
-        // higher-half alias of this exact physical address.
+        // PML4[0]. On Multiboot2, boot_multiboot2.s also mirrors this
+        // exact physical range at PML4[256] (see its comments), which
+        // is what phys_to_virt below actually resolves through --
+        // *not* the mapping being zeroed here.
         let pml4_0 = phys_to_virt(root_phys) as *mut u64;
         core::ptr::write_volatile(pml4_0, 0);
 
-        // Flush the TLB by reloading CR3, same as stage2.s did.
+        // Flush the TLB by reloading CR3.
         core::arch::asm!("mov cr3, {0}", in(reg) cr3);
     }
 }
@@ -463,7 +516,7 @@ pub unsafe fn unmap_low_half_identity_map() {
 /// Explicit initialization entry point
 pub unsafe fn init_memory_subsystem(heap_start: usize, heap_size: usize) {
     unsafe {
-        HEAP_ALLOCATOR.lock().init(heap_start, heap_size);
+        HEAP_ALLOCATOR.lock().init(phys_to_virt(heap_start), heap_size);
     }
 }
 
@@ -490,23 +543,24 @@ pub unsafe fn create_process_page_table() -> Option<usize> {
         let new_root = phys_to_virt(root_frame) as *mut u64;
         
         unsafe { 
-            // The kernel is higher-half (see bootloader/src/stage2.s,
-            // KERNEL_VIRT_LOAD_ADDR = 0xFFFF_8000_0010_0000): its code,
-            // data and any runtime physical/MMIO mappings (e.g. the
-            // framebuffer identity-map in main.rs) live at PML4 index
-            // 256, not in the low half. The low half (index 0) also
-            // gets used transiently by the bootloader, and nothing
-            // else besides the kernel populates any other index at
-            // boot time. So copying the *entire* 512-entry table here
-            // is equivalent to hand-picking {0, 256} today, and it
-            // keeps working automatically if the kernel ever maps
-            // something at a different high index later -- without
-            // this, a freshly spawned process's page table would have
-            // nothing mapped at 256, and the instant the scheduler
-            // switched CR3 to it, the very next instruction fetch
-            // (still running kernel code, at a higher-half address)
-            // would have nowhere to translate through and would fault
-            // immediately.
+            // The kernel is higher-half (see linker_x86.ld's
+            // KERNEL_VMA, PML4 index 511): its code, data and any
+            // runtime physical/MMIO mappings (e.g. the framebuffer
+            // identity-map in main.rs) live there, not in the low
+            // half. Index 0 also gets used transiently at boot
+            // (Limine's own use of it, if any, or boot_multiboot2.s's
+            // trampoline -- see unmap_low_half_identity_map), index
+            // 256 by memory::HHDM_OFFSET's mapping, and nothing else
+            // besides the kernel populates any other index at boot
+            // time. So copying the *entire* 512-entry table here is
+            // equivalent to hand-picking exactly the indices the
+            // kernel actually uses today, and it keeps working
+            // automatically if that set ever changes -- without this,
+            // a freshly spawned process's page table would be missing
+            // one of them, and the instant the scheduler switched CR3
+            // to it, the very next instruction fetch or physical-memory
+            // access through that missing mapping would have nowhere
+            // to translate through and would fault immediately.
             //
             // Note: this shares the underlying page-table structures
             // with the parent, not just the mappings -- by itself that
@@ -514,9 +568,8 @@ pub unsafe fn create_process_page_table() -> Option<usize> {
             // step on each other by both extending the same shared PD
             // entry for their own private mappings. What actually
             // prevents that: every index this loop copies is either
-            // populated only by the kernel (0, 256) or, for every
-            // index in between, is still completely empty at this
-            // point (nothing has ever mapped anything there) -- and
+            // populated only by the kernel/bootloader, or, for every
+            // other index, is still completely empty at this point (nothing has ever mapped anything there) -- and
             // every process's *private* mappings are required to live
             // at memory::USER_SPACE_BASE or above (index 1, see its
             // doc comment and elf.rs's segment validation), which
