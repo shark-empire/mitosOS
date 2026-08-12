@@ -6,18 +6,18 @@ pub fn init() {
     let mut uart = crate::uart::Uart::shared();
     let _ = core::fmt::Write::write_str(&mut uart, "mitosOS: Initializing Hardware Abstraction Layer...\n");
 
-    match acpi::find_rsdp_legacy() {
-        Some(rsdp_addr) => {
+    match acpi::get_limine_rsdp() {
+        Ok(rsdp_addr) => {
             let _ = core::fmt::Write::write_fmt(
                 &mut uart,
-                format_args!("mitosOS: ACPI RSDP located at 0x{:X}\n", rsdp_addr)
+                format_args!("mitosOS: Limine ACPI RSDP located at virtual 0x{:X}\n", rsdp_addr)
             );
             
             match acpi::parse_rsdp(rsdp_addr) {
                 Ok(root_table_addr) => {
                     let _ = core::fmt::Write::write_fmt(
                         &mut uart,
-                        format_args!("mitosOS: ACPI Root Table (RSDT/XSDT) at 0x{:X}\n", root_table_addr)
+                        format_args!("mitosOS: ACPI Root Table (RSDT/XSDT) at physical 0x{:X}\n", root_table_addr)
                     );
                     // Next step will be parsing this root table for the MADT and MCFG
                 }
@@ -29,8 +29,11 @@ pub fn init() {
                 }
             }
         },
-        None => {
-            let _ = core::fmt::Write::write_str(&mut uart, "mitosOS: ERR: ACPI RSDP not found in legacy BIOS memory!\n");
+        Err(e) => {
+            let _ = core::fmt::Write::write_fmt(
+                &mut uart,
+                format_args!("mitosOS: ERR: ACPI RSDP not found via Limine - {}\n", e)
+            );
         }
     }
 }
