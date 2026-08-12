@@ -243,7 +243,9 @@ DATA64_SEG equ 16
     out dx, al
 
     lgdt [GDTR_ADDR]
-    jmp CODE64_SEG:.long_mode_entry
+    jmp CODE64_SEG:(.long_mode_entry - KERNEL_VMA_OFFSET)
+
+
 
 [bits 64]
 .long_mode_entry:
@@ -280,4 +282,7 @@ DATA64_SEG equ 16
     mov edi, esi                  ; edi = info ptr (zero-extends to rdi)
     mov esi, 0x36d76289           ; esi = magic (zero-extends to rsi)
 
-    jmp _start
+    ; Force an absolute jump so we actually transition to the high VMA
+    mov rax, strict qword _start
+    jmp rax
+
