@@ -139,7 +139,8 @@ print_hex64:
     pop rax
     ret
 
-section .bss.stack
+section .bss.stack nobits
+
 align 16
     resb 16384
 stack_top:
