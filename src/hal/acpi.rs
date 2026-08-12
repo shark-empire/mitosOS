@@ -3,10 +3,14 @@
 //! Responsible for discovering hardware tables provided by the firmware.
 
 use core::mem;
+use limine::request::AcpiRequest;
 
-/// See `memory::phys_to_virt`'s doc comment: there is no permanent
-/// identity map on x86_64, so every physical access here has to go
-/// through that translation instead.
+/// The Limine ACPI request. The bootloader will fill this with the RSDP address.
+#[used]
+#[link_section = ".requests"]
+static ACPI_REQUEST: AcpiRequest = AcpiRequest::new();
+
+/// See `memory::phys_to_virt`'s doc comment.
 #[inline]
 fn phys_to_virt(phys: usize) -> usize {
     crate::memory::phys_to_virt(phys)
@@ -67,11 +71,28 @@ impl RsdpDescriptor20 {
     }
 }
 
+/// Fetches the RSDP address directly from the Limine bootloader response.
+pub fn get_limine_rsdp() -> Result<usize, &'static str> {
+    if let Some(response) = ACPI_REQUEST.get_response() {
+        // The `rsdp()` method returns a pointer. We cast it to usize for easy handling.
+        let rsdp_addr = response.rsdp() as *const _ as usize;
+        
+        if rsdp_addr == 0 {
+            return Err("Limine provided a null RSDP address");
+        }
+        Ok(rsdp_addr)
+    } else {
+        Err("Limine ACPI request did not receive a response")
+    }
+}
+
 /// Parses the ACPI root pointer to find the main table array.
 /// Returns the physical address of the RSDT (32-bit) or XSDT (64-bit).
-pub fn parse_rsdp(rsdp_phys_addr: usize) -> Result<usize, &'static str> {
+pub fn parse_rsdp(rsdp_virtual_addr: usize) -> Result<usize, &'static str> {
     unsafe {
-        let rsdp = &*(phys_to_virt(rsdp_phys_addr) as *const RsdpDescriptor);
+        // We do NOT use phys_to_virt here because Limine already provides 
+        // a mapped, directly usable higher-half virtual address.
+        let rsdp = &*(rsdp_virtual_addr as *const RsdpDescriptor);
         
         if &rsdp.signature != b"RSD PTR " {
             return Err("Invalid RSDP signature");
@@ -79,56 +100,20 @@ pub fn parse_rsdp(rsdp_phys_addr: usize) -> Result<usize, &'static str> {
 
         // Check if ACPI 2.0+ (revision 2 or higher)
         if rsdp.revision >= 2 {
-            let rsdp20 = &*(phys_to_virt(rsdp_phys_addr) as *const RsdpDescriptor20);
+            let rsdp20 = &*(rsdp_virtual_addr as *const RsdpDescriptor20);
             if !rsdp20.is_valid_extended() {
                 return Err("Invalid ACPI 2.0 extended checksum");
             }
+            // Note: The XSDT address inside the table is usually a physical address.
+            // You will need to map this or use phys_to_virt when parsing the XSDT later.
             Ok(rsdp20.xsdt_address as usize)
         } else {
             // ACPI 1.0 fallback
             if !rsdp.is_valid() {
                 return Err("Invalid ACPI 1.0 checksum");
             }
+            // Note: The RSDT address is a physical address.
             Ok(rsdp.rsdt_address as usize)
         }
     }
 }
-
-// src/hal/acpi.rs
-
-/// Scans the legacy BIOS memory region (0x000E0000 - 0x000FFFFF) to locate the RSDP.
-pub fn find_rsdp_legacy() -> Option<usize> {
-    let start_addr: usize = 0x000E_0000;
-    let end_addr: usize = 0x000F_FFFF;
-
-    // The RSDP is guaranteed to be on a 16-byte boundary
-    let mut current_addr = start_addr;
-    
-    while current_addr < end_addr {
-        // Read 8 bytes safely to check the signature
-        let signature = unsafe { core::slice::from_raw_parts(phys_to_virt(current_addr) as *const u8, 8) };
-        
-        if signature == b"RSD PTR " {
-            // We found the signature, now validate the checksum
-            let rsdp = unsafe { &*(phys_to_virt(current_addr) as *const RsdpDescriptor) };
-            
-            // Check if it's an ACPI 2.0 extended descriptor first
-            if rsdp.revision >= 2 {
-                let rsdp20 = unsafe { &*(phys_to_virt(current_addr) as *const RsdpDescriptor20) };
-                if rsdp20.is_valid_extended() {
-                    return Some(current_addr);
-                }
-            }
-            
-            // Fallback to ACPI 1.0 validation
-            if rsdp.is_valid() {
-                return Some(current_addr);
-            }
-        }
-        
-        current_addr += 16;
-    }
-
-    None
-}
-
