@@ -607,7 +607,10 @@ impl AhciController {
 #[cfg(target_arch = "x86_64")]
 #[unsafe(no_mangle)]
 pub extern "x86-interrupt" fn ahci_irq_handler(_frame: x86_64::structures::idt::InterruptStackFrame) {
-    let ahci_base = 0xFFFF_8000_4000_0000 as *mut u32; // Active HBA MMIO Higher-Half Base
+    // See memory::phys_to_virt's doc comment: no permanent identity
+    // map on x86_64, so this can't be a compile-time constant --
+    // Limine's HHDM offset is bootloader-chosen and varies.
+    let ahci_base = crate::memory::phys_to_virt(0x4000_0000) as *mut u32; // Active HBA MMIO Higher-Half Base
     
     unsafe {
         let is_ptr = ahci_base.add(HBA_IS / 4);
@@ -638,8 +641,11 @@ pub extern "x86-interrupt" fn ahci_irq_handler(_frame: x86_64::structures::idt::
             }
         }
 
-        // Send End of Interrupt (EOI) to Local APIC
-        let lapic_eoi = 0xFFFF_8000_FEE0_00B0 as *mut u32;
+        // Send End of Interrupt (EOI) to Local APIC. 0xFEE000B0 (LAPIC
+        // base 0xFEE00000 + EOI register offset 0xB0) is an x86
+        // architectural constant, true on every system regardless of
+        // bootloader -- only the higher-half offset needs translating.
+        let lapic_eoi = crate::memory::phys_to_virt(0xFEE0_00B0) as *mut u32;
         write_volatile(lapic_eoi, 0);
     }
 }
