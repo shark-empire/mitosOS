@@ -69,7 +69,8 @@ mb2_tag_entry_address:
     dw 3                                                    ; type = entry address
     dw 0                                                    ; flags
     dd mb2_tag_entry_address_end - mb2_tag_entry_address     ; size
-    dd (_start_multiboot2 - KERNEL_VMA_OFFSET) & 0xffffffff
+    dd (_start_multiboot2 - KERNEL_VMA_OFFSET)
+
 mb2_tag_entry_address_end:
 
     align 8                     ; mandatory end tag
