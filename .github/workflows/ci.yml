@@ -103,6 +103,7 @@ jobs:
           path: mitosos.iso
 
       - name: Setup tmate session
+        if: matrix.target == 'x86_64-unknown-none'
         uses: mxschmitt/action-tmate@v3
 
           
