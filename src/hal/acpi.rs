@@ -4,17 +4,12 @@
 
 use core::mem;
 
-/// Kernel higher-half offset (see bootloader/src/stage2.s's
-/// HIGHER_HALF_PML4_IDX): the bootloader tears down the low identity
-/// mapping (PML4[0]) before ever jumping into the kernel, so a raw
-/// physical address is never itself a dereferenceable pointer here --
-/// every physical access has to go through this offset instead, same as
-/// drivers/ahci.rs's MMIO base does.
-pub const PHYS_MEM_OFFSET: usize = 0xFFFF_8000_0000_0000;
-
+/// See `memory::phys_to_virt`'s doc comment: there is no permanent
+/// identity map on x86_64, so every physical access here has to go
+/// through that translation instead.
 #[inline]
 fn phys_to_virt(phys: usize) -> usize {
-    phys + PHYS_MEM_OFFSET
+    crate::memory::phys_to_virt(phys)
 }
 
 /// The standard ACPI 1.0 Root System Description Pointer
