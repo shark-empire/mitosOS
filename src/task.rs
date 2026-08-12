@@ -196,20 +196,22 @@ impl Task {
         let aligned_top = stack_top & !0xF;
         let frame_ptr = (aligned_top - core::mem::size_of::<TaskContext>()) as *mut TaskContext;
 
-        #[cfg(target_arch = "x86_64")]
-        unsafe {
-            frame_ptr.write(TaskContext {
-                r15: 0, r14: 0, r13: 0, r12: 0,
-                r11: 0, r10: 0, r9: 0,  r8: 0,
-                rbp: 0, rdi: 0, rsi: 0, rdx: 0,
-                rcx: 0, rbx: 0, rax: 0,
-                rip: entry as usize,
-                cs: if is_user { crate::gdt::USER_CODE_SELECTOR as usize } else { 0x08 },
-                rflags: 0x202,
-                rsp: if is_user { user_stack_top } else { stack_top },
-                ss: if is_user { crate::gdt::USER_DATA_SELECTOR as usize } else { 0x10 },
-            });
-        }
+ #[cfg(target_arch = "x86_64")]
+unsafe {
+    frame_ptr.write(TaskContext {
+        r15: 0, r14: 0, r13: 0, r12: 0,
+        r11: 0, r10: 0, r9: 0,  r8: 0,
+        rbp: 0, rdi: 0, rsi: 0, rdx: 0,
+        rcx: 0, rbx: 0, rax: 0,
+        rip: entry as usize,
+        cs: if is_user { crate::gdt::USER_CODE_SELECTOR as usize } else { 0x08 },
+        rflags: 0x202,
+        // Subtract 8 bytes so RSP ends in 0x...8 when the task starts executing
+        rsp: if is_user { user_stack_top - 8 } else { aligned_top - 8 },
+        ss: if is_user { crate::gdt::USER_DATA_SELECTOR as usize } else { 0x10 },
+    });
+}
+
 
         #[cfg(target_arch = "aarch64")]
         unsafe {
