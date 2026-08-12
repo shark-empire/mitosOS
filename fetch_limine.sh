@@ -21,7 +21,8 @@ if [ -d limine ]; then
 fi
 
 echo "==> Cloning Limine (binary release branch: prebuilt stages + portable host-tool source)"
-git clone https://github.com/limine-bootloader/limine.git --branch=binary --depth=1
+git clone https://github.com/limine-bootloader/limine.git --branch=v9.x-binary --depth=1
+
 
 echo "==> Building the limine host tool"
 make -C limine
