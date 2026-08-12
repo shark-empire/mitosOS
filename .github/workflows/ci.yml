@@ -210,7 +210,7 @@ jobs:
           grep -q "mitosOS>" qemu_output.log
 
       - name: Build GRUB Multiboot2 ISO (x86_64 only, bypasses Limine entirely)
-        if: matrix.target == 'x86_64-unknown-none'
+        if: "!cancelled() && matrix.target == 'x86_64-unknown-none'"
         run: |
           # Same kernel ELF + ramdisk as mitosos.iso, but boots via GRUB's
           # real Multiboot2 loader instead of Limine. Purely a diagnostic:
@@ -239,7 +239,7 @@ jobs:
           grub-mkrescue -o mitosos-grub.iso grub_iso
 
       - name: Boot test via GRUB Multiboot2 (x86_64 only, bypasses Limine)
-        if: matrix.target == 'x86_64-unknown-none'
+        if: "!cancelled() && matrix.target == 'x86_64-unknown-none'"
         run: |
           set -o pipefail
 
