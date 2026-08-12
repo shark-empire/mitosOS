@@ -34,54 +34,48 @@ SECTIONS
 {
     . = KERNEL_LMA_BASE + KERNEL_VMA;
 
-    /* Must be within the first 32KiB of the file and 8-byte aligned;
+      /* Must be within the first 32KiB of the file and 8-byte aligned;
        being the very first section guarantees both. */
     .multiboot2_header : AT(ADDR(.multiboot2_header) - KERNEL_VMA) {
         KEEP(*(.multiboot2_header))
     }
 
-    .text : ALIGN(4096) AT(ADDR(.text) - KERNEL_VMA) {
+    .text ALIGN(4096) : AT(ADDR(.text) - KERNEL_VMA) {
         /* _start_multiboot2 (32-bit trampoline, boot_multiboot2.s)
-           first, then _start (boot_x86.s' shared 64-bit tail -- the
-           Limine entry point via ENTRY(_start) above, and also what
-           the trampoline jumps into once it reaches long mode), then
-           kmain (.text.entry). .text.entry must not end up first, or
-           the .bss zeroing _start does before `call kmain` gets
-           skipped. */
+           first, then _start (boot_x86.s' shared 64-bit tail...) */
         KEEP(*(.text.boot_multiboot2))
         KEEP(*(.text.boot))
         KEEP(*(.text.entry))
         *(.text .text.*)
     }
 
-    /* Limine request structs (src/limine.rs): must stay 8-byte
-       aligned, and must not be dead-stripped or reordered away from
-       their start/end markers. */
-    .limine_requests_start : ALIGN(8) AT(ADDR(.limine_requests_start) - KERNEL_VMA) {
+    /* Limine request structs (src/limine.rs) */
+    .limine_requests_start ALIGN(8) : AT(ADDR(.limine_requests_start) - KERNEL_VMA) {
         KEEP(*(.limine_requests_start))
     }
-    .limine_requests : ALIGN(8) AT(ADDR(.limine_requests) - KERNEL_VMA) {
+    .limine_requests ALIGN(8) : AT(ADDR(.limine_requests) - KERNEL_VMA) {
         KEEP(*(.limine_requests))
     }
-    .limine_requests_end : ALIGN(8) AT(ADDR(.limine_requests_end) - KERNEL_VMA) {
+    .limine_requests_end ALIGN(8) : AT(ADDR(.limine_requests_end) - KERNEL_VMA) {
         KEEP(*(.limine_requests_end))
     }
 
-    .rodata : ALIGN(4096) AT(ADDR(.rodata) - KERNEL_VMA) {
+    .rodata ALIGN(4096) : AT(ADDR(.rodata) - KERNEL_VMA) {
         *(.rodata .rodata.*)
     }
 
-    .data : ALIGN(4096) AT(ADDR(.data) - KERNEL_VMA) {
+    .data ALIGN(4096) : AT(ADDR(.data) - KERNEL_VMA) {
         *(.data .data.*)
     }
 
-    .bss (NOLOAD) : ALIGN(4096) AT(ADDR(.bss) - KERNEL_VMA) {
+    .bss ALIGN(4096) (NOLOAD) : AT(ADDR(.bss) - KERNEL_VMA) {
         __bss_start = .;
         *(.bss .bss.*)
         *(COMMON)
         . = ALIGN(16);
         __bss_end = .;
     }
+
 
     _kernel_end = .;
 
