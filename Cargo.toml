@@ -16,6 +16,8 @@ lto = true
 opt-level = 3
 codegen-units = 1
 strip = true
+debug = true
+
 
 [dependencies]
 spin = "0.9"
