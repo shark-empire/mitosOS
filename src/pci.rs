@@ -130,7 +130,7 @@ pub fn init_ahci_devices(uart: &mut impl Write) {
             let mut hal = KernelHal { phys_mem_offset: crate::memory::hhdm_offset() as u64 };
 
             match unsafe { AhciController::new(abar_phys, &mut hal) } {
-                Ok(mut ahci_controller) => {
+                Ok(ahci_controller) => {
                     let _ = writeln!(uart, "AHCI Controller initialized successfully!");
                     for port in ahci_controller.iter_ports() {
                         if port.kind() == DeviceKind::Sata {
