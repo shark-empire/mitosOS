@@ -336,6 +336,44 @@ pub fn first_module() -> Option<(usize, usize)> {
     Some((file.address as usize, file.size as usize))
 }
 
+
+// --- RSDP (ACPI) ---------------------------------------------------------
+
+#[repr(C)]
+struct RsdpRequest {
+    id: [u64; 4],
+    revision: u64,
+    response: AtomicPtr<RsdpResponse>,
+}
+
+#[repr(C)]
+struct RsdpResponse {
+    revision: u64,
+    address: *mut u8,
+}
+
+#[used]
+#[unsafe(link_section = ".limine_requests")]
+static RSDP_REQUEST: RsdpRequest = RsdpRequest {
+    id: [COMMON_MAGIC_0, COMMON_MAGIC_1, 0x090a81423238fc5a, 0x4751f33cc26a42a1],
+    revision: 0,
+    response: AtomicPtr::new(core::ptr::null_mut()),
+};
+
+/// The virtual address of the ACPI RSDP provided by the bootloader.
+pub fn rsdp() -> Option<usize> {
+    let resp = RSDP_REQUEST.response.load(Ordering::SeqCst);
+    if resp.is_null() {
+        return None;
+    }
+    let resp = unsafe { &*resp };
+    if resp.address.is_null() {
+        return None;
+    }
+    Some(resp.address as usize)
+}
+
+
 // --- Requests section markers --------------------------------------------
 //
 // Honoured (not just hinted) at base revision 2+, which we request --
