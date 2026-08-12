@@ -24,10 +24,16 @@ spin = "0.9"
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86_64 = "0.15.2"
-# Limine removed. You now manage the boot state manually.
+# Limine + Multiboot2 boot support (src/limine.rs, src/boot_multiboot2.s,
+# src/boot_info.rs) is hand-written directly against limine-protocol's
+# PROTOCOL.md and the Multiboot2 spec rather than an external crate, so
+# it adds no new dependency here.
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 # Your AArch64 dependencies
 
 [build-dependencies]
+# Used by build.rs for aarch64's boot.s only -- x86_64's boot_x86.s and
+# boot_multiboot2.s are assembled by shelling out to nasm directly
+# instead (see build.rs's file header for why).
 cc = "1.0"
