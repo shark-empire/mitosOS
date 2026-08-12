@@ -167,12 +167,17 @@ fn kmain_common() -> ! {
         //    IST1, which this sets up.
         #[cfg(target_arch = "x86_64")]
         gdt::init();
-        #[cfg(target_arch = "x86_64")]
-        hal::init();
 
         // 2. Install IDT/Vector table so the CPU can handle exceptions & IRQs.
         interrupts::init();
         let _ = writeln!(uart, "[boot] 1: interrupts::init() returned");
+
+    
+        
+        #[cfg(target_arch = "x86_64")]
+        hal::init();
+
+        
 
         // 2b. Tear down PML4[0]'s temporary identity mapping now that a
         //     real IDT is live. On a Multiboot2 boot this is real: it
