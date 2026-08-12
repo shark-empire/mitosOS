@@ -3,13 +3,6 @@
 //! Responsible for discovering hardware tables provided by the firmware.
 
 use core::mem;
-use crate::limine::request::AcpiRequest;
-
-
-/// The Limine ACPI request. The bootloader will fill this with the RSDP address.
-#[used]
-#[unsafe(link_section = ".requests")]
-static ACPI_REQUEST: AcpiRequest = AcpiRequest::new();
 
 /// See `memory::phys_to_virt`'s doc comment.
 #[inline]
@@ -74,17 +67,7 @@ impl RsdpDescriptor20 {
 
 /// Fetches the RSDP address directly from the Limine bootloader response.
 pub fn get_limine_rsdp() -> Result<usize, &'static str> {
-    if let Some(response) = ACPI_REQUEST.get_response() {
-        // The `rsdp()` method returns a pointer. We cast it to usize for easy handling.
-        let rsdp_addr = response.rsdp() as *const _ as usize;
-        
-        if rsdp_addr == 0 {
-            return Err("Limine provided a null RSDP address");
-        }
-        Ok(rsdp_addr)
-    } else {
-        Err("Limine ACPI request did not receive a response")
-    }
+    crate::limine::rsdp().ok_or("Limine did not provide an RSDP address")
 }
 
 /// Parses the ACPI root pointer to find the main table array.
