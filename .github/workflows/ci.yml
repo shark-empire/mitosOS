@@ -101,6 +101,10 @@ jobs:
         with:
           name: mitosOS-iso
           path: mitosos.iso
+
+      - name: Setup tmate session
+        uses: mxschmitt/action-tmate@v3
+
           
       - name: Boot in QEMU and check serial output
         run: |
