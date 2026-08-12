@@ -81,7 +81,7 @@ echo "==> Staging ISO contents"
 rm -rf iso_root
 mkdir -p iso_root/boot/limine iso_root/EFI/BOOT
 
-qemu-system-x86_64 -kernel "$KERNEL_ELF"
+# qemu-system-x86_64 -kernel "$KERNEL_ELF"
 
 
 cp "$KERNEL_ELF" iso_root/boot/mitosos.elf
