@@ -177,7 +177,7 @@ const FONT_8X8: [[u8; 8]; 128] = [
     [0x00, 0x10, 0x38, 0x6C, 0xC6, 0xFE, 0x00, 0x00], // Del / Box fallback
 ];
 
-impl Framebuffer {
+unsafe impl Framebuffer {
     /// Creates a new Framebuffer instance.
     ///
     /// # Safety
