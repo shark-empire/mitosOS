@@ -261,15 +261,14 @@ DATA64_SEG equ 16
     out dx, al
 
     ; _start (boot_x86.s) does not set up its own stack (`lea rsp, [rel
-    ; stack_top]`) until partway through -- its first several
-    ; instructions, including a diagnostic `call print_hex64`, run on
-    ; whatever RSP it was entered with. Limine guarantees that's a
-    ; valid bootloader-provided stack (PROTOCOL.md, "Machine State at
-    ; Entry"); Multiboot2 explicitly does not define ESP at all. So,
-    ; unlike everything above, this trampoline must hand off with a
-    ; usable (if tiny and temporary -- a handful of pushes at most
-    ; before _start replaces it) stack of its own: one more identity-
-    ; mapped scratch page, used the same way PML4_ADDR etc. are.
+    ; stack_top]`) until partway through -- everything before that
+    ; runs on whatever RSP it was entered with. Limine guarantees
+    ; that's a valid bootloader-provided stack (PROTOCOL.md, "Machine
+    ; State at Entry"); Multiboot2 explicitly does not define ESP at
+    ; all. So, unlike everything above, this trampoline must hand off
+    ; with a usable (if tiny and temporary) stack of its own: one more
+    ; identity-mapped scratch page, used the same way PML4_ADDR etc.
+    ; are.
     mov esp, TMP_STACK_TOP
 
     ; Relay (multiboot2 info ptr, magic) into the same two registers
