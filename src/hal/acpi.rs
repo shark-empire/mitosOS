@@ -93,44 +93,73 @@ pub fn get_limine_rsdp() -> Result<usize, &'static str> {
 }
 
 /// Parses the ACPI root pointer to find the main table array.
-pub fn parse_rsdp(rsdp_virtual_addr: usize) -> Result<RootTable, &'static str> {
+pub fn parse_rsdp(
+    rsdp_virtual_addr: usize,
+) -> Result<RootTable, &'static str> {
     unsafe {
-        let rsdp = &*(rsdp_virtual_addr as *const RsdpDescriptor);
+        let rsdp =
+            &*(rsdp_virtual_addr as *const RsdpDescriptor);
 
-        // Validate the common ACPI signature first.
-        if &rsdp.signature != b"RSD PTR " {
+        let signature =
+            core::ptr::addr_of!(rsdp.signature)
+                .read_unaligned();
+
+        if signature != *b"RSD PTR " {
             return Err("Invalid RSDP signature");
         }
 
-        // ACPI 1.0
-        if rsdp.revision < 2 {
-            if !rsdp.is_valid() {
-                return Err("Invalid ACPI 1.0 RSDP checksum");
+        let revision =
+            core::ptr::addr_of!(rsdp.revision)
+                .read_unaligned();
+
+        if revision >= 2 {
+            let rsdp20 =
+                &*(rsdp_virtual_addr as *const RsdpDescriptor20);
+
+            if !rsdp20.is_valid_extended() {
+                return Err(
+                    "Invalid ACPI 2.0+ checksum"
+                );
             }
 
-            let rsdt_address = rsdp.rsdt_address as usize;
+            let xsdt_address =
+                core::ptr::addr_of!(rsdp20.xsdt_address)
+                    .read_unaligned() as usize;
+
+            let rsdt_address =
+                core::ptr::addr_of!(
+                    rsdp20.first_part.rsdt_address
+                )
+                .read_unaligned() as usize;
+
+            if xsdt_address != 0 {
+                Ok(RootTable::Xsdt(xsdt_address))
+            } else if rsdt_address != 0 {
+                Ok(RootTable::Rsdt(rsdt_address))
+            } else {
+                Err(
+                    "ACPI 2.0+ RSDP contains no RSDT or XSDT"
+                )
+            }
+        } else {
+            if !rsdp.is_valid() {
+                return Err(
+                    "Invalid ACPI 1.0 checksum"
+                );
+            }
+
+            let rsdt_address =
+                core::ptr::addr_of!(rsdp.rsdt_address)
+                    .read_unaligned() as usize;
 
             if rsdt_address == 0 {
-                return Err("ACPI 1.0 RSDT address is null");
+                return Err(
+                    "ACPI 1.0 RSDP contains no RSDT"
+                );
             }
 
-            return Ok(RootTable::Rsdt(rsdt_address));
+            Ok(RootTable::Rsdt(rsdt_address))
         }
-
-        // ACPI 2.0+
-        let rsdp20 = &*(rsdp_virtual_addr as *const RsdpDescriptor20);
-
-        if !rsdp20.is_valid_extended() {
-            return Err("Invalid ACPI 2.0+ RSDP checksum");
-        }
-
-        let xsdt_address = rsdp20.xsdt_address as usize;
-
-        if xsdt_address == 0 {
-            return Err("ACPI 2.0+ XSDT address is null");
-        }
-
-        Ok(RootTable::Xsdt(xsdt_address))
     }
 }
 
@@ -187,33 +216,56 @@ pub struct Madt {
 pub fn init() {
     let rsdp_virt = match get_limine_rsdp() {
         Ok(addr) => addr,
+
         Err(e) => {
-            crate::println!("ACPI: {e}");
+            crate::println!(
+                "ACPI: {}",
+                e
+            );
             return;
         }
     };
 
-    let root = match parse_rsdp(rsdp_virt) {
+    let root_table = match parse_rsdp(rsdp_virt) {
         Ok(root) => root,
+
         Err(e) => {
-            crate::println!("ACPI: Failed to parse RSDP: {e}");
+            crate::println!(
+                "ACPI: Failed to parse RSDP: {}",
+                e
+            );
             return;
         }
     };
 
-    match root {
-    RootTable::Xsdt(xsdt_phys_or_virt) => {
-        crate::println!("ACPI: Using XSDT (ACPI 2.0+)");
-        parse_xsdt(xsdt_phys_or_virt);
-    }
+    match root_table {
+        RootTable::Xsdt(addr) => {
+            crate::println!(
+                "ACPI: Using XSDT (ACPI 2.0+)"
+            );
 
-    RootTable::Rsdt(rsdt_phys_or_virt) => {
-        crate::println!("ACPI: Using RSDT (ACPI 1.0/legacy)");
-        parse_rsdt(rsdt_phys_or_virt);
+            crate::println!(
+                "ACPI: XSDT at 0x{:X}",
+                addr
+            );
+
+            parse_xsdt(addr);
+        }
+
+        RootTable::Rsdt(addr) => {
+            crate::println!(
+                "ACPI: Using RSDT (ACPI 1.0/legacy)"
+            );
+
+            crate::println!(
+                "ACPI: RSDT at 0x{:X}",
+                addr
+            );
+
+            parse_rsdt(addr);
+        }
     }
-  }
 }
-
 fn parse_xsdt(xsdt_addr: usize) {
     unsafe {
         let xsdt_virt = xsdt_addr as *const SdtHeader;
