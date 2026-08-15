@@ -74,30 +74,35 @@ pub fn get_limine_rsdp() -> Result<usize, &'static str> {
 /// Returns the physical address of the RSDT (32-bit) or XSDT (64-bit).
 pub fn parse_rsdp(rsdp_virtual_addr: usize) -> Result<usize, &'static str> {
     unsafe {
-        // We do NOT use phys_to_virt here because Limine already provides 
-        // a mapped, directly usable higher-half virtual address.
         let rsdp = &*(rsdp_virtual_addr as *const RsdpDescriptor);
-        
+
         if &rsdp.signature != b"RSD PTR " {
             return Err("Invalid RSDP signature");
         }
 
-        // Check if ACPI 2.0+ (revision 2 or higher)
-        if rsdp.revision >= 2 {
+        let revision = core::ptr::addr_of!(rsdp.revision)
+            .read_unaligned();
+
+        if revision >= 2 {
             let rsdp20 = &*(rsdp_virtual_addr as *const RsdpDescriptor20);
+
             if !rsdp20.is_valid_extended() {
                 return Err("Invalid ACPI 2.0 extended checksum");
             }
-            // Note: The XSDT address inside the table is usually a physical address.
-            // You will need to map this or use phys_to_virt when parsing the XSDT later.
-            Ok(rsdp20.xsdt_address as usize)
+
+            let xsdt_address = core::ptr::addr_of!(rsdp20.xsdt_address)
+                .read_unaligned();
+
+            Ok(xsdt_address as usize)
         } else {
-            // ACPI 1.0 fallback
             if !rsdp.is_valid() {
                 return Err("Invalid ACPI 1.0 checksum");
             }
-            // Note: The RSDT address is a physical address.
-            Ok(rsdp.rsdt_address as usize)
+
+            let rsdt_address = core::ptr::addr_of!(rsdp.rsdt_address)
+                .read_unaligned();
+
+            Ok(rsdt_address as usize)
         }
     }
 }
@@ -119,7 +124,9 @@ pub struct SdtHeader {
 
 impl SdtHeader {
     pub fn is_valid(&self) -> bool {
-        let size = self.length as usize;
+        let size = unsafe {
+    core::ptr::addr_of!(self.length).read_unaligned() as usize
+            };
         let ptr = self as *const _ as *const u8;
         let mut sum: u8 = 0;
         unsafe {
@@ -155,7 +162,11 @@ pub fn init() {
                             return;
                         }
 
-                        let entries_count = (xsdt.length as usize - mem::size_of::<SdtHeader>()) / 8;
+                        let xsdt_length = core::ptr::addr_of!(xsdt.length)
+                       .read_unaligned() as usize;
+
+                        let entries_count =
+                       (xsdt_length - mem::size_of::<SdtHeader>()) / 8;
                         let entries_ptr = (xsdt_virt as usize + mem::size_of::<SdtHeader>()) as *const u64;
 
                         crate::println!("ACPI: Parsing {} system description tables...", entries_count);
@@ -166,11 +177,18 @@ pub fn init() {
                             let header = &*table_virt;
 
                             if &header.signature == b"APIC" {
-                                let madt = &*(table_virt as *const Madt);
-                                crate::println!("ACPI: Found MADT (Local APIC at 0x{:X})", madt.local_apic_address);
-                            } else if &header.signature == b"MCFG" {
-                                crate::println!("ACPI: Found MCFG (PCIe Configuration Space)");
-                            }
+                          let madt = &*(table_virt as *const Madt);
+
+                         let local_apic_address = core::ptr::addr_of!(madt.local_apic_address)
+                        .read_unaligned();
+
+                      crate::println!(
+                     "ACPI: Found MADT (Local APIC at 0x{:X})",
+                         local_apic_address
+                           );
+                  } else if &header.signature == b"MCFG" {
+               crate::println!("ACPI: Found MCFG (PCIe Configuration Space)");
+                         }
                         }
                     }
                 }
