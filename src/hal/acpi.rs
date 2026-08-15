@@ -268,12 +268,11 @@ pub fn init() {
 }
 fn parse_xsdt(xsdt_addr: usize) {
     unsafe {
-        let xsdt_virt = xsdt_addr as *const SdtHeader;
+        // FIX 1: Translate the base XSDT physical address
+        let xsdt_virt = phys_to_virt(xsdt_addr) as *const SdtHeader;
         let xsdt = &*xsdt_virt;
 
-        let signature =
-            core::ptr::addr_of!(xsdt.signature).read_unaligned();
-
+        let signature = core::ptr::addr_of!(xsdt.signature).read_unaligned();
         if signature != *b"XSDT" {
             crate::println!("ACPI: Invalid XSDT signature");
             return;
@@ -284,39 +283,33 @@ fn parse_xsdt(xsdt_addr: usize) {
             return;
         }
 
-        let xsdt_length =
-            core::ptr::addr_of!(xsdt.length)
-                .read_unaligned() as usize;
-
+        let xsdt_length = core::ptr::addr_of!(xsdt.length).read_unaligned() as usize;
         if xsdt_length < mem::size_of::<SdtHeader>() {
             crate::println!("ACPI: Invalid XSDT length");
             return;
         }
 
-        let entries_count =
-            (xsdt_length - mem::size_of::<SdtHeader>()) / 8;
+        let entries_count = (xsdt_length - mem::size_of::<SdtHeader>()) / 8;
 
-        let entries_ptr =
-            (xsdt_addr + mem::size_of::<SdtHeader>()) as *const u64;
+        // FIX 2: Translate the base address when calculating the entries array pointer
+        let entries_ptr = (phys_to_virt(xsdt_addr) + mem::size_of::<SdtHeader>()) as *const u64;
 
-        crate::println!(
-            "ACPI: Parsing {} XSDT entries...",
-            entries_count
-        );
+        crate::println!("ACPI: Parsing {} XSDT entries...", entries_count);
 
         for i in 0..entries_count {
-            let table_addr =
-                core::ptr::addr_of!(*entries_ptr.add(i))
-                    .read_unaligned() as usize;
+            // The address stored INSIDE the table is also a physical address
+            let entry_phys_addr = core::ptr::addr_of!(*entries_ptr.add(i)).read_unaligned() as usize;
 
-            parse_acpi_table(table_addr);
+            // FIX 3: Translate the entry's physical address before parsing it
+            parse_acpi_table(phys_to_virt(entry_phys_addr));
         }
     }
 }
 
+
 fn parse_rsdt(rsdt_addr: usize) {
     unsafe {
-        let rsdt_virt = rsdt_addr as *const SdtHeader;
+        let rsdt_virt = phys_to_virt(rsdt_addr) as *const SdtHeader;
         let rsdt = &*rsdt_virt;
 
         let signature =
@@ -345,7 +338,7 @@ fn parse_rsdt(rsdt_addr: usize) {
             (rsdt_length - mem::size_of::<SdtHeader>()) / 4;
 
         let entries_ptr =
-            (rsdt_addr + mem::size_of::<SdtHeader>()) as *const u32;
+            (phys_to_virt(rsdt_addr) + mem::size_of::<SdtHeader>()) as *const u32;
 
         crate::println!(
             "ACPI: Parsing {} RSDT entries...",
@@ -357,7 +350,7 @@ fn parse_rsdt(rsdt_addr: usize) {
                 core::ptr::addr_of!(*entries_ptr.add(i))
                     .read_unaligned() as usize;
 
-            parse_acpi_table(table_addr);
+            parse_acpi_table(phys_to_virt(table_addr));
         }
     }
 }
