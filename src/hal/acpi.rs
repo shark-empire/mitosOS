@@ -10,6 +10,22 @@ fn phys_to_virt(phys: usize) -> usize {
     crate::memory::phys_to_virt(phys)
 }
 
+/// See `memory::hhdm_offset`'s doc comment. That function itself is
+/// x86_64-only (aarch64 has no HHDM-offset concept -- phys_to_virt is
+/// a no-op there), but this file compiles on both targets, so give
+/// the diagnostic below a value either way instead of a cfg'd-out
+/// call site.
+#[cfg(target_arch = "x86_64")]
+#[inline]
+fn hhdm_offset() -> usize {
+    crate::memory::hhdm_offset()
+}
+#[cfg(target_arch = "aarch64")]
+#[inline]
+fn hhdm_offset() -> usize {
+    0
+}
+
 /// ACPI init runs at boot, long before graphics::WRITER exists (the
 /// framebuffer isn't set up until much later in main.rs's
 /// kmain_common) -- so, like every other pre-framebuffer boot
@@ -232,28 +248,59 @@ pub struct Madt {
 
 /// High-level entry point to initialize and parse ACPI tables via Limine's RSDP
 pub fn init() {
-    let rsdp_virt = match get_limine_rsdp() {
+    let rsdp_phys = match get_limine_rsdp() {
         Ok(addr) => addr,
 
         Err(e) => {
-            ulog!(
-                "ACPI: {}",
-                e
-            );
+            ulog!("ACPI: {}", e);
             return;
         }
     };
 
-    let root_table = match parse_rsdp(rsdp_virt) {
-        Ok(root) => root,
-
-        Err(e) => {
+    // PROTOCOL.md documents the RSDP address as physical at exactly
+    // base revision 3 (what this kernel requests -- see
+    // limine.rs::BASE_REVISION) and HHDM-virtual at every other
+    // revision -- and the address really does come across
+    // untranslated (see limine::rsdp()'s doc comment), which is
+    // consistent with that. But translating it via the HHDM offset
+    // alone wasn't enough to make it validate in practice, so this
+    // tries both interpretations and logs which one (if either)
+    // actually worked, rather than silently guessing wrong the same
+    // way twice.
+    let rsdp_translated = phys_to_virt(rsdp_phys);
+    let root_table = match parse_rsdp(rsdp_translated) {
+        Ok(root) => {
             ulog!(
-                "ACPI: Failed to parse RSDP: {}",
-                e
+                "ACPI: RSDP valid at translated address 0x{:X} (physical 0x{:X})",
+                rsdp_translated,
+                rsdp_phys
             );
-            return;
+            root
         }
+        Err(e_translated) => match parse_rsdp(rsdp_phys) {
+            Ok(root) => {
+                ulog!(
+                    "ACPI: RSDP valid at raw/untranslated address 0x{:X} -- \
+                     translated address 0x{:X} did not validate: {}",
+                    rsdp_phys,
+                    rsdp_translated,
+                    e_translated
+                );
+                root
+            }
+            Err(e_raw) => {
+                ulog!(
+                    "ACPI: Failed to parse RSDP at translated 0x{:X} ({}) \
+                     or raw 0x{:X} ({}); current HHDM offset: 0x{:X}",
+                    rsdp_translated,
+                    e_translated,
+                    rsdp_phys,
+                    e_raw,
+                    hhdm_offset()
+                );
+                return;
+            }
+        },
     };
 
     match root_table {
