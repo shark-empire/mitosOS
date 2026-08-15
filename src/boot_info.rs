@@ -79,7 +79,15 @@ pub fn init(arg0: u64, arg1: u64) {
         return;
     }
 
-    if crate::limine::base_revision_supported() {
+    // `detected()` (any Limine request actually answered) rather than
+    // `base_revision_supported()` (that exact revision granted): the
+    // two used to be conflated here, so a bootloader that answers
+    // every request but falls back to an older base revision than
+    // requested (a real, spec-legal outcome, not a "this isn't
+    // Limine" signal) took the "unknown bootloader" branch below --
+    // silently skipping set_hhdm_offset for the rest of boot. main.rs
+    // logs separately if the exact revision wasn't granted.
+    if crate::limine::detected() {
         PROTOCOL.store(BootProtocol::Limine as u8, ORDER);
 
         if let Some(offset) = crate::limine::hhdm_offset() {
