@@ -101,3 +101,83 @@ pub fn parse_rsdp(rsdp_virtual_addr: usize) -> Result<usize, &'static str> {
         }
     }
 }
+
+/// Standard ACPI System Description Table header
+#[repr(C, packed)]
+#[derive(Copy, Clone, Debug)]
+pub struct SdtHeader {
+    pub signature: [u8; 4],
+    pub length: u32,
+    pub revision: u8,
+    pub checksum: u8,
+    pub oem_id: [u8; 6],
+    pub oem_table_id: [u8; 8],
+    pub oem_revision: u32,
+    pub creator_id: u32,
+    pub creator_revision: u32,
+}
+
+impl SdtHeader {
+    pub fn is_valid(&self) -> bool {
+        let size = self.length as usize;
+        let ptr = self as *const _ as *const u8;
+        let mut sum: u8 = 0;
+        unsafe {
+            for i in 0..size {
+                sum = sum.wrapping_add(*ptr.add(i));
+            }
+        }
+        sum == 0
+    }
+}
+
+/// Multiple APIC Description Table (MADT) header
+#[repr(C, packed)]
+#[derive(Copy, Clone, Debug)]
+pub struct Madt {
+    pub header: SdtHeader,
+    pub local_apic_address: u32,
+    pub flags: u32,
+}
+
+/// High-level entry point to initialize and parse ACPI tables via Limine's RSDP
+pub fn init() {
+    match get_limine_rsdp() {
+        Ok(rsdp_virt) => {
+            match parse_rsdp(rsdp_virt) {
+                Ok(xsdt_phys) => {
+                    // XSDT address from RSDP is physical; convert to virtual using HHDM
+                    let xsdt_virt = phys_to_virt(xsdt_phys) as *const SdtHeader;
+                    unsafe {
+                        let xsdt = &*xsdt_virt;
+                        if &xsdt.signature != b"XSDT" || !xsdt.is_valid() {
+                            crate::println!("ACPI: Invalid XSDT signature or checksum");
+                            return;
+                        }
+
+                        let entries_count = (xsdt.length as usize - mem::size_of::<SdtHeader>()) / 8;
+                        let entries_ptr = (xsdt_virt as usize + mem::size_of::<SdtHeader>()) as *const u64;
+
+                        crate::println!("ACPI: Parsing {} system description tables...", entries_count);
+
+                        for i in 0..entries_count {
+                            let table_phys = *entries_ptr.add(i) as usize;
+                            let table_virt = phys_to_virt(table_phys) as *const SdtHeader;
+                            let header = &*table_virt;
+
+                            if &header.signature == b"APIC" {
+                                let madt = &*(table_virt as *const Madt);
+                                crate::println!("ACPI: Found MADT (Local APIC at 0x{:X})", madt.local_apic_address);
+                            } else if &header.signature == b"MCFG" {
+                                crate::println!("ACPI: Found MCFG (PCIe Configuration Space)");
+                            }
+                        }
+                    }
+                }
+                Err(e) => crate::println!("ACPI: Failed to parse RSDP: {e}"),
+            }
+        }
+        Err(e) => crate::println!("ACPI: {e}"),
+    }
+}
+
