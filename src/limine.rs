@@ -367,10 +367,10 @@ static RSDP_REQUEST: RsdpRequest = RsdpRequest {
     response: AtomicPtr::new(core::ptr::null_mut()),
 };
 
-/// Returns the virtual HHDM address of the ACPI RSDP.
+/// Physical address of the ACPI RSDP.
 ///
-/// mitosOS requests Limine base revision 4, so Limine provides
-/// the RSDP address as an HHDM virtual address.
+/// With Limine base revision 3, the RSDP request returns a physical
+/// address. Convert it through the HHDM before dereferencing it.
 pub fn rsdp() -> Option<usize> {
     let resp = RSDP_REQUEST.response.load(Ordering::SeqCst);
 
