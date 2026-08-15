@@ -197,7 +197,7 @@ fn kmain_common() -> ! {
 
      #[cfg(target_arch = "x86_64")]
     {
-        crate::acpi::init();
+        crate::hal::acpi::init();
     }
 
 
@@ -323,54 +323,89 @@ if let Some(frame) = crate::memory::alloc_frame() {
         reported_fb.unwrap_or((FB_ADDR, FB_WIDTH, FB_HEIGHT, FB_PITCH, true));
 
     let mut fb = unsafe {
-        if reported_fb.is_none() {
-            let _ = writeln!(uart, "mitosOS: WARN no framebuffer from bootloader, trying fallback address");
-        }
-        if needs_mapping {
-            // Identity-map the framebuffer's MMIO pages before anything
-            // touches them. Limine's own framebuffer response is always
-            // already mapped (HHDM); a Multiboot2 one is not, and neither
-            // is the last-resort fallback above -- see boot_info::framebuffer().
-            let cr3: usize;
-            core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack));
-            let page_table_root = cr3 & !0xFFF;
+    if reported_fb.is_none() {
+        let _ = writeln!(
+            uart,
+            "mitosOS: WARN no framebuffer from bootloader, trying fallback address"
+        );
+    }
 
-            let fb_pages = (pitch * height + 0xFFF) / 0x1000;
-            for i in 0..fb_pages {
-                let page_addr = addr + i * 0x1000;
-                if let Err(e) = crate::memory::map_page(page_table_root, page_addr, page_addr) {
-                    let _ = writeln!(uart, "mitosOS: WARN framebuffer mapping failed: {e}");
-                    break;
-                }
+    if needs_mapping {
+        let cr3: usize;
+        core::arch::asm!(
+            "mov {}, cr3",
+            out(reg) cr3,
+            options(nomem, nostack)
+        );
+
+        let page_table_root = cr3 & !0xFFF;
+
+        let fb_pages = (pitch * height + 0xFFF) / 0x1000;
+
+        for i in 0..fb_pages {
+            let page_addr = addr + i * 0x1000;
+
+            if let Err(e) = crate::memory::map_page(
+                page_table_root,
+                page_addr,
+                page_addr,
+            ) {
+                let _ = writeln!(
+                    uart,
+                    "mitosOS: WARN framebuffer mapping failed: {e}"
+                );
+                break;
             }
         }
-
-        Framebuffer::new(addr, width, height, pitch)
-    };
-
-       
-    fb.clear(Color::BLACK);
-    Framebuffer::draw_boot_splash(&mut fb);
-    fb.draw_string(10, 70, "mitosOS System Init...", Color::GREEN);
-    fb.draw_string(
-        10, 90,
-        if inited.is_some() { "Ramdisk: loaded" } else { "Ramdisk: missing" },
-        Color::CYAN,
-    );
-    
-    // MOVE THIS INSIDE THE BLOCK
-    let mut terminal = graphics::Terminal::new(&mut fb);
-    
-    // Now you have formatted logging!
-    let _ = write!(terminal, "mitosOS Booting...\n");
-    let _ = write!(terminal, "Framebuffer resolution: {}x{}\n", terminal.fb.width, terminal.fb.height);
-
-    // Test the scrolling by printing 150 lines:
-    for i in 0..150 {
-        let _ = write!(terminal, "Loading module {}...\n", i);
     }
-    
-    } 
+
+    Framebuffer::new(addr, width, height, pitch)
+};
+
+// Use fb BEFORE moving it into Terminal.
+fb.clear(Color::BLACK);
+
+Framebuffer::draw_boot_splash(&mut fb);
+
+fb.draw_string(
+    10,
+    70,
+    "mitosOS System Init...",
+    Color::GREEN,
+);
+
+fb.draw_string(
+    10,
+    90,
+    if inited.is_some() {
+        "Ramdisk: loaded"
+    } else {
+        "Ramdisk: missing"
+    },
+    Color::CYAN,
+);
+
+// fb is MOVED here.
+let mut terminal = graphics::Terminal::new(fb);
+
+// From this point onward, use terminal.fb instead of fb.
+let _ = write!(terminal, "mitosOS Booting...\n");
+
+let _ = write!(
+    terminal,
+    "Framebuffer resolution: {}x{}\n",
+    terminal.fb.width,
+    terminal.fb.height
+);
+
+for i in 0..150 {
+    let _ = write!(
+        terminal,
+        "Loading module {}...\n",
+        i
+    );
+   } 
+} 
 
     // 3. HARDWARE: Start the timer.
     #[cfg(target_arch = "x86_64")]
