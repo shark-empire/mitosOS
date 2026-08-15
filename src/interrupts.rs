@@ -457,8 +457,34 @@ mod imp {
             }
         }
 
-        // Check if the fault came from User Space (Ring 3 address or User-bit)
-        let is_user_fault = (error_code & (1 << 2) != 0) || (rip >= 0x8000000000);
+        // Check if the fault came from User Space.
+        //
+        // RIP alone can tell user from kernel here: user code is
+        // only ever placed at or above memory::USER_SPACE_BASE, but
+        // always below the canonical "hole" (the gap between the low
+        // and high canonical halves) -- while kernel code is linked
+        // in the *high* canonical half (KERNEL_VMA =
+        // 0xffffffff80000000+, see boot_info::KERNEL_VMA), which is
+        // numerically far above that hole. The previous check here
+        // only tested the USER_SPACE_BASE floor with no ceiling, so
+        // every kernel-mode fault RIP (already >= USER_SPACE_BASE,
+        // just from being a huge unsigned high-half address) matched
+        // it too -- misreporting real kernel bugs as harmless "user
+        // process" faults and quietly killing the current task
+        // (below) instead of panicking.
+        //
+        // error_code's bit 2 is a genuine U/S flag only for page
+        // faults (vector 14); for #GP (vector 13) and other vectors
+        // it's part of a selector index (or 0), not a CPL indicator,
+        // so it must not be OR'd in for those.
+        const CANONICAL_LOW_HALF_CEILING: u64 = 0x0000_8000_0000_0000;
+        let rip_in_user_range = rip >= crate::memory::USER_SPACE_BASE as u64
+            && rip < CANONICAL_LOW_HALF_CEILING;
+        let is_user_fault = if vector == 14 {
+            (error_code & (1 << 2) != 0) || rip_in_user_range
+        } else {
+            rip_in_user_range
+        };
 
         if is_user_fault && vector != 8 {
             use core::fmt::Write;
