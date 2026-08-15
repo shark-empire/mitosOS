@@ -404,3 +404,11 @@ static REQUESTS_START_MARKER: [u64; 4] = [
 #[used]
 #[unsafe(link_section = ".limine_requests_end")]
 static REQUESTS_END_MARKER: [u64; 2] = [0xadc0e0531bb10d03, 0x9572709f31764c62];
+
+pub fn detected() -> bool {
+    HHDM_REQUEST.response.load(Ordering::SeqCst) != core::ptr::null_mut()
+        || FRAMEBUFFER_REQUEST.response.load(Ordering::SeqCst) != core::ptr::null_mut()
+        || MEMMAP_REQUEST.response.load(Ordering::SeqCst) != core::ptr::null_mut()
+        || MODULE_REQUEST.response.load(Ordering::SeqCst) != core::ptr::null_mut()
+        || EXECUTABLE_ADDRESS_REQUEST.response.load(Ordering::SeqCst) != core::ptr::null_mut()
+}
