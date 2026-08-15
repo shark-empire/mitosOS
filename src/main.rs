@@ -47,6 +47,7 @@ use crate::memory::{protect_boot_memory, MapFlags};
 #[cfg(target_arch = "x86_64")]
 use crate::graphics::{Framebuffer, Color};
 use alloc::boxed::Box;
+use core::fmt::Write; 
 
 const HEAP_START: usize = 0x150_000;
 
@@ -341,6 +342,7 @@ if let Some(frame) = crate::memory::alloc_frame() {
         Framebuffer::new(addr, width, height, pitch)
     };
 
+       
     fb.clear(Color::BLACK);
     Framebuffer::draw_boot_splash(&mut fb);
     fb.draw_string(10, 70, "mitosOS System Init...", Color::GREEN);
@@ -349,11 +351,26 @@ if let Some(frame) = crate::memory::alloc_frame() {
         if inited.is_some() { "Ramdisk: loaded" } else { "Ramdisk: missing" },
         Color::CYAN,
     );
+    
+    // MOVE THIS INSIDE THE BLOCK
+    let mut terminal = graphics::Terminal::new(&mut fb);
+    
+    // Now you have formatted logging!
+    let _ = write!(terminal, "mitosOS Booting...\n");
+    let _ = write!(terminal, "Framebuffer resolution: {}x{}\n", terminal.fb.width, terminal.fb.height);
+
+    // Test the scrolling by printing 150 lines:
+    for i in 0..150 {
+        let _ = write!(terminal, "Loading module {}...\n", i);
     }
+    
+    } 
 
     // 3. HARDWARE: Start the timer.
     #[cfg(target_arch = "x86_64")]
     timer::hardware::init();
+    
+
 
     // --- FAT32 Mounting (RAM-backed test volume) ---
     let ram_disk: alloc::boxed::Box<dyn block::BlockDevice> =
