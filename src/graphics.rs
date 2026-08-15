@@ -358,7 +358,7 @@ impl Terminal {
 }
 
 /// Allows the Terminal to accept Rust formatting macros (like `write!`)
-impl<'a> core::fmt::Write for Terminal<'a> {
+impl core::fmt::Write for Terminal {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
         for byte in s.bytes() {
             self.write_byte(byte);
