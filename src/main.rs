@@ -148,10 +148,20 @@ fn kmain_common() -> ! {
 
     #[cfg(target_arch = "x86_64")]
     {
-        if crate::limine::detected() {
-    crate::println!("mitosOS: booted via Limine");
-} else {
-    crate::println!("mitosOS: WARN no supported boot protocol detected");
+        match crate::boot_info::protocol() {
+    crate::boot_info::BootProtocol::Limine => {
+        crate::println!("mitosOS: booted via Limine");
+    }
+
+    crate::boot_info::BootProtocol::Multiboot2 => {
+        crate::println!("mitosOS: booted via Multiboot2");
+    }
+
+    crate::boot_info::BootProtocol::Unknown => {
+        crate::println!(
+            "mitosOS: WARN no supported boot protocol detected"
+        );
+    }
 }
      if let Some((entries, usable_bytes)) = boot_info::memmap_summary() {
             let _ = writeln!(
