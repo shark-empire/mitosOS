@@ -104,22 +104,27 @@ fn sys_read(fd: usize, ptr: *mut u8, len: usize) -> usize {
     bytes_read
 }
 
-/// Populates system information metadata into the provided `UtsName` buffer pointer.
 fn sys_uname(ptr: *mut UtsName) -> usize {
     if ptr.is_null() {
         return usize::MAX;
     }
+    if !validate_user_ptr(ptr as usize, core::mem::size_of::<UtsName>(), true) {
+        return usize::MAX;
+    }
+
+    // ADD THE ALIGNMENT CHECK HERE
     if (ptr as usize) % core::mem::align_of::<UtsName>() != 0 {
-    return usize::MAX;
-}
+        return usize::MAX;
+    }
 
-
-    // Safety: Verify pointer is non-null before writing
+    // Safety: Verify pointer is non-null and aligned before writing
     let uts = unsafe { &mut *ptr };
     uts.populate();
 
     0 // Success
 }
+
+
 
 /// Releases `len` bytes of the calling process's own memory starting
 /// at `ptr`, returning each page's physical frame to the allocator.
