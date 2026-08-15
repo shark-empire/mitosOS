@@ -1,6 +1,7 @@
 /// Professional Production-Ready Framebuffer Graphics & 8x8 Font Renderer for mitosOS.
 
 use core::fmt;
+use crate::sync::Spinlock;
 
 /// Represents an RGB color value for the framebuffer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -309,16 +310,15 @@ impl Framebuffer {
 
 /// A text-mode console wrapper around the Framebuffer that handles 
 /// cursor tracking, screen wrapping, scrolling, and string formatting.
-pub struct Terminal<'a> {
-    pub fb: &'a mut Framebuffer,
+pub struct Terminal {
+    pub fb: Framebuffer, // Changed: Owns the struct instead of a reference
     pub cursor_x: usize,
     pub cursor_y: usize,
     pub text_color: Color,
 }
 
-impl<'a> Terminal<'a> {
-    /// Creates a new terminal starting at the top-left corner.
-    pub fn new(fb: &'a mut Framebuffer) -> Self {
+impl Terminal {
+    pub fn new(fb: Framebuffer) -> Self { // Changed: Takes ownership
         Self {
             fb,
             cursor_x: 0,
@@ -365,6 +365,29 @@ impl<'a> core::fmt::Write for Terminal<'a> {
         }
         Ok(())
     }
+}
+
+pub static WRITER: Spinlock<Option<Terminal>> = Spinlock::new(None);
+
+#[doc(hidden)]
+pub fn _print(args: core::fmt::Arguments) {
+    use core::fmt::Write;
+    // Lock the writer and print if it has been initialized
+    if let Some(writer) = &mut *WRITER.lock() {
+        writer.write_fmt(args).unwrap();
+    }
+}
+
+// Exported macros available everywhere in the kernel
+#[macro_export]
+macro_rules! print {
+    ($($arg:tt)*) => ($crate::graphics::_print(format_args!($($arg)*)));
+}
+
+#[macro_export]
+macro_rules! println {
+    () => ($crate::print!("\n"));
+    ($($arg:tt)*) => ($crate::print!("{}\n", format_args!($($arg)*)));
 }
 
 
