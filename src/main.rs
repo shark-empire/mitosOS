@@ -195,6 +195,12 @@ fn kmain_common() -> ! {
         // 3. Initialize the heap allocator subsystem.
         memory::init_memory_subsystem(HEAP_START, HEAP_SIZE);
 
+     #[cfg(target_arch = "x86_64")]
+    {
+        crate::acpi::init();
+    }
+
+
         // 3b. Reserve boot/kernel/heap memory in the frame allocator.
         // This has to happen right here, before *anything* else gets a
         // chance to call vmm_alloc_frame() -- it used to run much later
