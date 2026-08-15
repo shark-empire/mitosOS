@@ -202,18 +202,16 @@ pub fn init() {
     };
 
     match root {
-        AcpiRoot::Xsdt(xsdt_phys_or_virt) => {
-            crate::println!("ACPI: Using XSDT (ACPI 2.0+)");
-
-            parse_xsdt(xsdt_phys_or_virt);
-        }
-
-        AcpiRoot::Rsdt(rsdt_phys_or_virt) => {
-            crate::println!("ACPI: Using RSDT (ACPI 1.0/legacy)");
-
-            parse_rsdt(rsdt_phys_or_virt);
-        }
+    RootTable::Xsdt(xsdt_phys_or_virt) => {
+        crate::println!("ACPI: Using XSDT (ACPI 2.0+)");
+        parse_xsdt(xsdt_phys_or_virt);
     }
+
+    RootTable::Rsdt(rsdt_phys_or_virt) => {
+        crate::println!("ACPI: Using RSDT (ACPI 1.0/legacy)");
+        parse_rsdt(rsdt_phys_or_virt);
+    }
+  }
 }
 
 fn parse_xsdt(xsdt_addr: usize) {
