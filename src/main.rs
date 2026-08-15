@@ -47,7 +47,7 @@ use crate::memory::{protect_boot_memory, MapFlags};
 #[cfg(target_arch = "x86_64")]
 use crate::graphics::{Framebuffer, Color};
 use alloc::boxed::Box;
-use core::fmt::Write; 
+
 
 const HEAP_START: usize = 0x150_000;
 
