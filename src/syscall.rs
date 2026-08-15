@@ -109,9 +109,10 @@ fn sys_uname(ptr: *mut UtsName) -> usize {
     if ptr.is_null() {
         return usize::MAX;
     }
-    if !validate_user_ptr(ptr as usize, core::mem::size_of::<UtsName>(), true) {
-        return usize::MAX;
-    }
+    if (ptr as usize) % core::mem::align_of::<UtsName>() != 0 {
+    return usize::MAX;
+}
+
 
     // Safety: Verify pointer is non-null before writing
     let uts = unsafe { &mut *ptr };
