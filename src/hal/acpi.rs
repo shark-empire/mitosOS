@@ -10,6 +10,24 @@ fn phys_to_virt(phys: usize) -> usize {
     crate::memory::phys_to_virt(phys)
 }
 
+/// ACPI init runs at boot, long before graphics::WRITER exists (the
+/// framebuffer isn't set up until much later in main.rs's
+/// kmain_common) -- so, like every other pre-framebuffer boot
+/// message, these diagnostics have to go straight to the UART.
+/// println!/print! target graphics::WRITER and would silently do
+/// nothing this early, which is exactly what every call in this file
+/// used to do -- this whole module's ACPI table walk was completely
+/// silent, success or failure, on every boot.
+macro_rules! ulog {
+    ($($arg:tt)*) => {{
+        let mut uart = crate::uart::Uart::shared();
+        let _ = core::fmt::Write::write_fmt(
+            &mut uart,
+            format_args!("{}\n", format_args!($($arg)*)),
+        );
+    }};
+}
+
 /// The standard ACPI 1.0 Root System Description Pointer
 #[repr(C, packed)]
 pub struct RsdpDescriptor {
@@ -218,7 +236,7 @@ pub fn init() {
         Ok(addr) => addr,
 
         Err(e) => {
-            crate::println!(
+            ulog!(
                 "ACPI: {}",
                 e
             );
@@ -230,7 +248,7 @@ pub fn init() {
         Ok(root) => root,
 
         Err(e) => {
-            crate::println!(
+            ulog!(
                 "ACPI: Failed to parse RSDP: {}",
                 e
             );
@@ -240,11 +258,11 @@ pub fn init() {
 
     match root_table {
         RootTable::Xsdt(addr) => {
-            crate::println!(
+            ulog!(
                 "ACPI: Using XSDT (ACPI 2.0+)"
             );
 
-            crate::println!(
+            ulog!(
                 "ACPI: XSDT at 0x{:X}",
                 addr
             );
@@ -253,11 +271,11 @@ pub fn init() {
         }
 
         RootTable::Rsdt(addr) => {
-            crate::println!(
+            ulog!(
                 "ACPI: Using RSDT (ACPI 1.0/legacy)"
             );
 
-            crate::println!(
+            ulog!(
                 "ACPI: RSDT at 0x{:X}",
                 addr
             );
@@ -274,18 +292,18 @@ fn parse_xsdt(xsdt_addr: usize) {
 
         let signature = core::ptr::addr_of!(xsdt.signature).read_unaligned();
         if signature != *b"XSDT" {
-            crate::println!("ACPI: Invalid XSDT signature");
+            ulog!("ACPI: Invalid XSDT signature");
             return;
         }
 
         if !xsdt.is_valid() {
-            crate::println!("ACPI: Invalid XSDT checksum");
+            ulog!("ACPI: Invalid XSDT checksum");
             return;
         }
 
         let xsdt_length = core::ptr::addr_of!(xsdt.length).read_unaligned() as usize;
         if xsdt_length < mem::size_of::<SdtHeader>() {
-            crate::println!("ACPI: Invalid XSDT length");
+            ulog!("ACPI: Invalid XSDT length");
             return;
         }
 
@@ -294,7 +312,7 @@ fn parse_xsdt(xsdt_addr: usize) {
         // FIX 2: Translate the base address when calculating the entries array pointer
         let entries_ptr = (phys_to_virt(xsdt_addr) + mem::size_of::<SdtHeader>()) as *const u64;
 
-        crate::println!("ACPI: Parsing {} XSDT entries...", entries_count);
+        ulog!("ACPI: Parsing {} XSDT entries...", entries_count);
 
         for i in 0..entries_count {
             // The address stored INSIDE the table is also a physical address
@@ -316,12 +334,12 @@ fn parse_rsdt(rsdt_addr: usize) {
             core::ptr::addr_of!(rsdt.signature).read_unaligned();
 
         if signature != *b"RSDT" {
-            crate::println!("ACPI: Invalid RSDT signature");
+            ulog!("ACPI: Invalid RSDT signature");
             return;
         }
 
         if !rsdt.is_valid() {
-            crate::println!("ACPI: Invalid RSDT checksum");
+            ulog!("ACPI: Invalid RSDT checksum");
             return;
         }
 
@@ -330,7 +348,7 @@ fn parse_rsdt(rsdt_addr: usize) {
                 .read_unaligned() as usize;
 
         if rsdt_length < mem::size_of::<SdtHeader>() {
-            crate::println!("ACPI: Invalid RSDT length");
+            ulog!("ACPI: Invalid RSDT length");
             return;
         }
 
@@ -340,7 +358,7 @@ fn parse_rsdt(rsdt_addr: usize) {
         let entries_ptr =
             (phys_to_virt(rsdt_addr) + mem::size_of::<SdtHeader>()) as *const u32;
 
-        crate::println!(
+        ulog!(
             "ACPI: Parsing {} RSDT entries...",
             entries_count
         );
@@ -366,7 +384,7 @@ fn parse_acpi_table(table_addr: usize) {
                 .read_unaligned();
 
         if !header.is_valid() {
-            crate::println!(
+            ulog!(
                 "ACPI: Invalid table checksum"
             );
             return;
@@ -381,24 +399,24 @@ fn parse_acpi_table(table_addr: usize) {
                 )
                 .read_unaligned();
 
-            crate::println!(
+            ulog!(
                 "ACPI: Found MADT (Local APIC at 0x{:X})",
                 local_apic_address
             );
         } else if signature == *b"MCFG" {
-            crate::println!(
+            ulog!(
                 "ACPI: Found MCFG (PCIe Configuration Space)"
             );
         } else if signature == *b"FACP" {
-            crate::println!(
+            ulog!(
                 "ACPI: Found FADT"
             );
         } else if signature == *b"HPET" {
-            crate::println!(
+            ulog!(
                 "ACPI: Found HPET"
             );
         } else {
-            crate::println!(
+            ulog!(
                 "ACPI: Found table {:?}",
                 signature
             );
