@@ -391,11 +391,14 @@ let mut terminal = graphics::Terminal::new(fb);
 // From this point onward, use terminal.fb instead of fb.
 let _ = write!(terminal, "mitosOS Booting...\n");
 
+let fb_width = terminal.fb.width;
+let fb_height = terminal.fb.height;
+
 let _ = write!(
     terminal,
     "Framebuffer resolution: {}x{}\n",
-    terminal.fb.width,
-    terminal.fb.height
+    fb_width,
+    fb_height
 );
 
 for i in 0..150 {
