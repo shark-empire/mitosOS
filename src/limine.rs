@@ -367,20 +367,23 @@ static RSDP_REQUEST: RsdpRequest = RsdpRequest {
     response: AtomicPtr::new(core::ptr::null_mut()),
 };
 
-/// Returns the virtual HHDM address of the ACPI RSDP.
+/// Returns the ACPI RSDP address exactly as Limine reported it --
+/// physical, per PROTOCOL.md, at exactly base revision 3 (what
+/// mitosOS requests -- see BASE_REVISION above; every other revision,
+/// old or 4+, gets it HHDM-virtual instead).
 ///
-/// mitosOS requests Limine base revision 3 (see BASE_REVISION above),
-/// and PROTOCOL.md is explicit that the RSDP address is returned as
-/// a *physical* address at exactly base revision 3 (it's HHDM-virtual
-/// at every other revision, including both older ones and 4+) --
-/// so this translates it via the HHDM offset before handing it back,
-/// the same way every other physical address from a raw Limine
-/// response gets translated elsewhere in this module/hal::acpi.
-/// Bug history: this used to skip the translation on the assumption
-/// the address was already virtual, which happened to go unnoticed
-/// because a since-reverted change briefly requested revision 4
-/// instead -- see git blame / the project notes if this needs
-/// revisiting for a future revision bump.
+/// Deliberately *not* translated here anymore: an earlier version of
+/// this function did the phys_to_virt translation internally and
+/// returned a virtual pointer, on the (PROTOCOL.md-documented, and
+/// confirmed correct by this address being raw/untranslated at the
+/// wire) assumption that translated-physical was all that was needed
+/// -- but that alone wasn't sufficient to make the RSDP parse
+/// correctly in practice (still failed after translating), so
+/// hal::acpi::init() now owns both the translation *and* a fallback
+/// to the raw address if the translated one doesn't validate,
+/// logging which one actually worked. Keeping this function a
+/// faithful, untranslated passthrough of what Limine gave us is what
+/// makes that fallback possible.
 pub fn rsdp() -> Option<usize> {
     let resp = RSDP_REQUEST.response.load(Ordering::SeqCst);
 
@@ -394,7 +397,7 @@ pub fn rsdp() -> Option<usize> {
         return None;
     }
 
-    Some(crate::memory::phys_to_virt(resp.address as usize))
+    Some(resp.address as usize)
 }
 
 

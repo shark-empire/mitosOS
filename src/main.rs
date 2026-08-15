@@ -174,10 +174,12 @@ fn kmain_common() -> ! {
         // 3. Initialize the heap allocator subsystem.
         memory::init_memory_subsystem(HEAP_START, HEAP_SIZE);
 
-     #[cfg(target_arch = "x86_64")]
-    {
-        crate::hal::acpi::init();
-    }
+        // ACPI init (RSDP -> XSDT/RSDT -> table walk) already happened
+        // as part of hal::init() above -- it used to be redundantly
+        // called again here too (a second, independent call into
+        // acpi::init(), on top of hal::init() calling it internally),
+        // which is exactly the kind of duplication that let one of the
+        // two RSDP-parsing bugs get fixed without the other.
 
 
         // 3b. Reserve boot/kernel/heap memory in the frame allocator.
