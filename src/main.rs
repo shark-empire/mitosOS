@@ -73,30 +73,6 @@ unsafe extern "C" {
     static _kernel_end: u8;
 }
 
-/// TEMP DIAGNOSTIC: writes one raw byte straight to COM1 (0x3f8), no
-/// LSR polling, no dependency on `uart::Uart` being initialized --
-/// same technique boot_x86.s and boot_multiboot2.s use for their own
-/// for their own checkpoint characters. Exists to tell apart two
-/// things that currently look identical in CI ("[boot] 0: kmain
-/// reached, uart live" never printing): kmain not being entered at
-/// all, vs. kmain being entered but hanging inside `uart::Uart::init()`
-/// or the LSR-empty poll in its first real `write_byte()` call, which
-/// -- unlike this -- can spin forever if that bit never comes back
-/// set. Remove both this and its two call sites in `kmain` once the
-/// hang is found.
-#[cfg(target_arch = "x86_64")]
-#[inline(always)]
-unsafe fn raw_checkpoint(c: u8) {
-    unsafe {
-        core::arch::asm!(
-            "out dx, al",
-            in("dx") 0x3f8u16,
-            in("al") c,
-            options(nomem, nostack, preserves_flags)
-        );
-    }
-}
-
 // _start (boot_x86.s) is reachable two ways on x86_64 -- Limine, and
 // Multiboot2 (see boot_multiboot2.s) -- and forwards whatever it was
 // entered with straight through into this call, untouched. Only a
@@ -129,17 +105,7 @@ pub extern "C" fn kmain() -> ! {
 }
 
 fn kmain_common() -> ! {
-    // Checkpoint 'A': kmain was entered at all.
-    #[cfg(target_arch = "x86_64")]
-    unsafe { raw_checkpoint(b'A'); }
-
     let mut uart = unsafe { uart::Uart::init() };
-
-    // Checkpoint 'B': Uart::init()'s own register pokes returned --
-    // if 'A' shows up in the log but 'B' doesn't, init() itself is
-    // where things stop, before the LSR poll below is ever reached.
-    #[cfg(target_arch = "x86_64")]
-    unsafe { raw_checkpoint(b'B'); }
 
     // Checkpoint 0: kmain was reached at all, and the UART's own
     // register pokes (GPIO ALT function, baud divisor, FIFO enable)
@@ -148,22 +114,24 @@ fn kmain_common() -> ! {
 
     #[cfg(target_arch = "x86_64")]
     {
-        match crate::boot_info::protocol() {
-    crate::boot_info::BootProtocol::Limine => {
-        crate::println!("mitosOS: booted via Limine");
-    }
-
-    crate::boot_info::BootProtocol::Multiboot2 => {
-        crate::println!("mitosOS: booted via Multiboot2");
-    }
-
-    crate::boot_info::BootProtocol::Unknown => {
-        crate::println!(
-            "mitosOS: WARN no supported boot protocol detected"
-        );
-    }
-}
-     if let Some((entries, usable_bytes)) = boot_info::memmap_summary() {
+        // These all run long before graphics::WRITER exists (the
+        // framebuffer isn't set up until much later in this
+        // function) -- like every other pre-framebuffer boot
+        // message, they go straight to the UART. println!/print!
+        // target graphics::WRITER and would silently do nothing here
+        // -- which is exactly what used to happen to this banner.
+        if crate::limine::detected() {
+            let _ = writeln!(uart, "mitosOS: booted via Limine");
+        } else {
+            let _ = writeln!(uart, "mitosOS: WARN no supported boot protocol detected");
+        }
+        if !crate::limine::base_revision_supported() {
+            let _ = writeln!(
+                uart,
+                "mitosOS: WARN Limine did not grant the exact requested base revision"
+            );
+        }
+        if let Some((entries, usable_bytes)) = boot_info::memmap_summary() {
             let _ = writeln!(
                 uart,
                 "mitosOS: bootloader memory map: {entries} entries, {} KiB usable",
@@ -397,28 +365,28 @@ fb.draw_string(
 );
 
 // fb is MOVED here.
-let mut terminal = graphics::Terminal::new(fb);
+let terminal = graphics::Terminal::new(fb);
 
-// From this point onward, use terminal.fb instead of fb.
-let _ = write!(terminal, "mitosOS Booting...\n");
-
+// Grab what's needed from `terminal` before handing it to WRITER
+// below, which moves it.
 let fb_width = terminal.fb.width;
 let fb_height = terminal.fb.height;
 
-let _ = write!(
-    terminal,
-    "Framebuffer resolution: {}x{}\n",
-    fb_width,
-    fb_height
-);
+// graphics::WRITER backs the println!/print! macros -- this was
+// previously never set anywhere in the kernel, silently turning
+// every println!/print! call (this crate-wide, including all of
+// hal::acpi's diagnostics) into a no-op forever. From this point
+// onward, use print!/println! instead of writing to `terminal`
+// directly, so the rest of the kernel's life can actually use them
+// too.
+*graphics::WRITER.lock() = Some(terminal);
+
+crate::print!("mitosOS Booting...\n");
+crate::println!("Framebuffer resolution: {}x{}", fb_width, fb_height);
 
 for i in 0..150 {
-    let _ = write!(
-        terminal,
-        "Loading module {}...\n",
-        i
-    );
-   } 
+    crate::println!("Loading module {}...", i);
+} 
 } 
 
     // 3. HARDWARE: Start the timer.
