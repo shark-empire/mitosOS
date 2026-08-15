@@ -1,6 +1,6 @@
 /// Professional Production-Ready Framebuffer Graphics & 8x8 Font Renderer for mitosOS.
 
-use core::fmt;
+
 use crate::sync::Spinlock;
 
 /// Represents an RGB color value for the framebuffer.
@@ -35,6 +35,7 @@ pub struct Framebuffer {
     pub height: usize,
     pub pitch: usize, // Bytes per scanline
 }
+unsafe impl Send for Framebuffer {}
 
 /// Comprehensive standard ASCII 8x8 bitmap font dataset (Codes 0 to 127).
 /// Each character is represented by 8 consecutive bytes (rows from top to bottom).
@@ -177,7 +178,7 @@ const FONT_8X8: [[u8; 8]; 128] = [
     [0x00, 0x10, 0x38, 0x6C, 0xC6, 0xFE, 0x00, 0x00], // Del / Box fallback
 ];
 
-unsafe impl Framebuffer {
+ impl Framebuffer {
     /// Creates a new Framebuffer instance.
     ///
     /// # Safety
