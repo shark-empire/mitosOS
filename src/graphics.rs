@@ -1,4 +1,6 @@
-//! Professional Production-Ready Framebuffer Graphics & 8x8 Font Renderer for mitosOS.
+/// Professional Production-Ready Framebuffer Graphics & 8x8 Font Renderer for mitosOS.
+
+use core::fmt;
 
 /// Represents an RGB color value for the framebuffer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -202,6 +204,27 @@ impl Framebuffer {
         }
     }
 
+        /// Scrolls the entire framebuffer up by one standard font line (8 pixels).
+    pub fn scroll_up(&mut self) {
+        let font_height = 8;
+        let row_bytes = self.pitch;
+        // Total bytes to shift up (everything except the top line)
+        let bytes_to_move = (self.height - font_height) * row_bytes;
+
+        unsafe {
+            // Cast to u8 pointers to move byte-by-byte based on the pitch
+            let dst = self.address as *mut u8;
+            let src = dst.add(font_height * row_bytes);
+            
+            // memmove: safely copies overlapping memory areas
+            core::ptr::copy(src, dst, bytes_to_move);
+            
+            // clear (zero out) the very bottom line to black
+            core::ptr::write_bytes(dst.add(bytes_to_move), 0, font_height * row_bytes);
+        }
+    }
+
+
     /// Fills the entire screen with a solid color.
     pub fn clear(&mut self, color: Color) {
         let color_val = color.to_u32();
@@ -283,4 +306,65 @@ impl Framebuffer {
     
     
 }
+
+/// A text-mode console wrapper around the Framebuffer that handles 
+/// cursor tracking, screen wrapping, scrolling, and string formatting.
+pub struct Terminal<'a> {
+    pub fb: &'a mut Framebuffer,
+    pub cursor_x: usize,
+    pub cursor_y: usize,
+    pub text_color: Color,
+}
+
+impl<'a> Terminal<'a> {
+    /// Creates a new terminal starting at the top-left corner.
+    pub fn new(fb: &'a mut Framebuffer) -> Self {
+        Self {
+            fb,
+            cursor_x: 0,
+            cursor_y: 0,
+            text_color: Color::WHITE,
+        }
+    }
+
+    /// Writes a single byte to the terminal, handling control characters and boundaries.
+    pub fn write_byte(&mut self, byte: u8) {
+        match byte {
+            b'\n' => self.new_line(),
+            b'\r' => self.cursor_x = 0,
+            byte => {
+                // Wrap text if we hit the right edge of the screen
+                if self.cursor_x >= self.fb.width {
+                    self.new_line();
+                }
+                
+                self.fb.draw_char(self.cursor_x, self.cursor_y, byte, self.text_color);
+                self.cursor_x += 8;
+            }
+        }
+    }
+
+    /// Advances the cursor to the next line, scrolling the screen if necessary.
+    fn new_line(&mut self) {
+        self.cursor_x = 0;
+        self.cursor_y += 8;
+        
+        // If the cursor falls off the bottom of the screen, scroll!
+        if self.cursor_y >= self.fb.height {
+            self.fb.scroll_up();
+            self.cursor_y -= 8; // Step the cursor back up by one line
+        }
+    }
+}
+
+/// Allows the Terminal to accept Rust formatting macros (like `write!`)
+impl<'a> core::fmt::Write for Terminal<'a> {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        for byte in s.bytes() {
+            self.write_byte(byte);
+        }
+        Ok(())
+    }
+}
+
 
