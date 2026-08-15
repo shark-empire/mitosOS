@@ -43,7 +43,7 @@ const COMMON_MAGIC_1: u64 = 0x0a82e883a194f07b;
 static BASE_REVISION: [AtomicU64; 3] = [
     AtomicU64::new(0xf9562b2d5c95a6c8),
     AtomicU64::new(0x6a7b384944536bdc),
-    AtomicU64::new(3),
+    AtomicU64::new(4),
 ];
 
 /// True if Limine reported it loaded us with the base revision we
@@ -337,6 +337,8 @@ pub fn first_module() -> Option<(usize, usize)> {
 }
 
 
+
+
 // --- RSDP (ACPI) ---------------------------------------------------------
 
 #[repr(C)]
@@ -355,21 +357,33 @@ struct RsdpResponse {
 #[used]
 #[unsafe(link_section = ".limine_requests")]
 static RSDP_REQUEST: RsdpRequest = RsdpRequest {
-    id: [COMMON_MAGIC_0, COMMON_MAGIC_1, 0x090a81423238fc5a, 0x4751f33cc26a42a1],
+    id: [
+        COMMON_MAGIC_0,
+        COMMON_MAGIC_1,
+        0xc5e77b6b397e7b43,
+        0x27637845accdcf3c,
+    ],
     revision: 0,
     response: AtomicPtr::new(core::ptr::null_mut()),
 };
 
-/// The virtual address of the ACPI RSDP provided by the bootloader.
+/// Returns the virtual HHDM address of the ACPI RSDP.
+///
+/// mitosOS requests Limine base revision 4, so Limine provides
+/// the RSDP address as an HHDM virtual address.
 pub fn rsdp() -> Option<usize> {
     let resp = RSDP_REQUEST.response.load(Ordering::SeqCst);
+
     if resp.is_null() {
         return None;
     }
+
     let resp = unsafe { &*resp };
+
     if resp.address.is_null() {
         return None;
     }
+
     Some(resp.address as usize)
 }
 
