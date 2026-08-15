@@ -43,7 +43,7 @@ const COMMON_MAGIC_1: u64 = 0x0a82e883a194f07b;
 static BASE_REVISION: [AtomicU64; 3] = [
     AtomicU64::new(0xf9562b2d5c95a6c8),
     AtomicU64::new(0x6a7b384944536bdc),
-    AtomicU64::new(4),
+    AtomicU64::new(3),
 ];
 
 /// True if Limine reported it loaded us with the base revision we
@@ -367,10 +367,20 @@ static RSDP_REQUEST: RsdpRequest = RsdpRequest {
     response: AtomicPtr::new(core::ptr::null_mut()),
 };
 
-/// Physical address of the ACPI RSDP.
+/// Returns the virtual HHDM address of the ACPI RSDP.
 ///
-/// With Limine base revision 3, the RSDP request returns a physical
-/// address. Convert it through the HHDM before dereferencing it.
+/// mitosOS requests Limine base revision 3 (see BASE_REVISION above),
+/// and PROTOCOL.md is explicit that the RSDP address is returned as
+/// a *physical* address at exactly base revision 3 (it's HHDM-virtual
+/// at every other revision, including both older ones and 4+) --
+/// so this translates it via the HHDM offset before handing it back,
+/// the same way every other physical address from a raw Limine
+/// response gets translated elsewhere in this module/hal::acpi.
+/// Bug history: this used to skip the translation on the assumption
+/// the address was already virtual, which happened to go unnoticed
+/// because a since-reverted change briefly requested revision 4
+/// instead -- see git blame / the project notes if this needs
+/// revisiting for a future revision bump.
 pub fn rsdp() -> Option<usize> {
     let resp = RSDP_REQUEST.response.load(Ordering::SeqCst);
 
@@ -384,7 +394,7 @@ pub fn rsdp() -> Option<usize> {
         return None;
     }
 
-    Some(resp.address as usize)
+    Some(crate::memory::phys_to_virt(resp.address as usize))
 }
 
 
