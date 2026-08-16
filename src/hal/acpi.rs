@@ -26,6 +26,27 @@ fn hhdm_offset() -> usize {
     0
 }
 
+/// Reads the first 16 bytes at `addr` for a diagnostic hex dump.
+///
+/// Only called after a failed RSDP signature check at this exact
+/// address -- if it weren't safely readable, that check would already
+/// have faulted getting this far (it reads the same bytes, just
+/// through a typed struct instead of raw), so this doesn't introduce
+/// new risk. Exists purely to tell apart two very different failure
+/// modes that otherwise look identical from a pass/fail signature
+/// check alone: real memory holding the wrong data (non-zero,
+/// structured-looking bytes) vs. an address that isn't backed by
+/// what we think it is (all zero, or some other flat/repeating
+/// pattern -- e.g. Limine's HHDM not actually covering this
+/// particular region at base revision 3).
+unsafe fn dump16(addr: usize) -> [u8; 16] {
+    unsafe {
+        let mut buf = [0u8; 16];
+        core::ptr::copy_nonoverlapping(addr as *const u8, buf.as_mut_ptr(), 16);
+        buf
+    }
+}
+
 /// ACPI init runs at boot, long before graphics::WRITER exists (the
 /// framebuffer isn't set up until much later in main.rs's
 /// kmain_common) -- so, like every other pre-framebuffer boot
@@ -297,6 +318,30 @@ pub fn init() {
                     rsdp_phys,
                     e_raw,
                     hhdm_offset()
+                );
+                // Signature mismatch alone doesn't say whether we're
+                // reading real-but-wrong memory or something that
+                // isn't backed by RSDP data at all -- dump the raw
+                // bytes at both candidate addresses so the next log
+                // answers that directly instead of needing another
+                // round trip.
+                let bt = unsafe { dump16(rsdp_translated) };
+                ulog!(
+                    "ACPI: bytes at translated 0x{:X}: \
+                     {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} \
+                     {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
+                    rsdp_translated,
+                    bt[0], bt[1], bt[2], bt[3], bt[4], bt[5], bt[6], bt[7],
+                    bt[8], bt[9], bt[10], bt[11], bt[12], bt[13], bt[14], bt[15]
+                );
+                let br = unsafe { dump16(rsdp_phys) };
+                ulog!(
+                    "ACPI: bytes at raw 0x{:X}: \
+                     {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} \
+                     {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
+                    rsdp_phys,
+                    br[0], br[1], br[2], br[3], br[4], br[5], br[6], br[7],
+                    br[8], br[9], br[10], br[11], br[12], br[13], br[14], br[15]
                 );
                 return;
             }
