@@ -47,6 +47,49 @@ unsafe fn dump16(addr: usize) -> [u8; 16] {
     }
 }
 
+/// Classical ACPI RSDP discovery (ACPI spec 5.2.5.1), independent of
+/// whatever Limine's own RSDP request reports: scan the first 1 KiB
+/// of the Extended BIOS Data Area, then the entire main BIOS
+/// read-only area (0xE0000-0xFFFFF), in 16-byte steps, for the
+/// eight-byte "RSD PTR " signature -- every x86 BIOS (real or QEMU's)
+/// is required to place it in one of those two regions. Used as a
+/// last resort after both interpretations of Limine's own answer
+/// fail to validate, or if Limine doesn't answer the request at all.
+/// A signature-only prefilter keeps this cheap; `parse_rsdp` (full
+/// checksum validation) decides whether each hit is real, so a
+/// coincidental 8-byte match elsewhere can't produce a false
+/// positive.
+fn scan_bios_for_rsdp() -> Option<usize> {
+    const SIGNATURE: &[u8; 8] = b"RSD PTR ";
+
+    fn scan_range(start_phys: usize, end_phys: usize) -> Option<usize> {
+        let mut phys = start_phys;
+        while phys + 16 <= end_phys {
+            let virt = phys_to_virt(phys);
+            let bytes = unsafe { dump16(virt) };
+            if bytes[0..8] == *SIGNATURE && parse_rsdp(virt).is_ok() {
+                return Some(virt);
+            }
+            phys += 16;
+        }
+        None
+    }
+
+    // EBDA base (as a real-mode segment, so << 4 for the physical
+    // address) lives as a 16-bit word at physical 0x40E, in the
+    // BIOS Data Area -- itself always safely readable low memory.
+    let ebda_segment_ptr = phys_to_virt(0x40E);
+    let ebda_segment = unsafe { core::ptr::read_unaligned(ebda_segment_ptr as *const u16) };
+    let ebda_base = (ebda_segment as usize) << 4;
+    if ebda_base != 0 {
+        if let Some(found) = scan_range(ebda_base, ebda_base + 1024) {
+            return Some(found);
+        }
+    }
+
+    scan_range(0xE0000, 0x100000)
+}
+
 /// ACPI init runs at boot, long before graphics::WRITER exists (the
 /// framebuffer isn't set up until much later in main.rs's
 /// kmain_common) -- so, like every other pre-framebuffer boot
@@ -269,83 +312,103 @@ pub struct Madt {
 
 /// High-level entry point to initialize and parse ACPI tables via Limine's RSDP
 pub fn init() {
-    let rsdp_phys = match get_limine_rsdp() {
-        Ok(addr) => addr,
+    let mut root_table: Option<RootTable> = None;
 
+    match get_limine_rsdp() {
+        Ok(rsdp_phys) => {
+            // PROTOCOL.md documents the RSDP address as physical at
+            // exactly base revision 3 (what this kernel requests --
+            // see limine.rs::BASE_REVISION) and HHDM-virtual at every
+            // other revision -- and the address really does come
+            // across untranslated (see limine::rsdp()'s doc comment),
+            // consistent with that. But translating it via the HHDM
+            // offset alone wasn't enough to make it validate in
+            // practice (confirmed: the translated address reads real,
+            // structured, non-zero bytes -- just not "RSD PTR " --
+            // while the raw one reads all zero, so neither is simply
+            // "unmapped"), so this tries both interpretations and
+            // logs which one, if either, actually worked.
+            let rsdp_translated = phys_to_virt(rsdp_phys);
+            match parse_rsdp(rsdp_translated) {
+                Ok(root) => {
+                    ulog!(
+                        "ACPI: RSDP valid at translated address 0x{:X} (physical 0x{:X})",
+                        rsdp_translated,
+                        rsdp_phys
+                    );
+                    root_table = Some(root);
+                }
+                Err(e_translated) => match parse_rsdp(rsdp_phys) {
+                    Ok(root) => {
+                        ulog!(
+                            "ACPI: RSDP valid at raw/untranslated address 0x{:X} -- \
+                             translated address 0x{:X} did not validate: {}",
+                            rsdp_phys,
+                            rsdp_translated,
+                            e_translated
+                        );
+                        root_table = Some(root);
+                    }
+                    Err(e_raw) => {
+                        ulog!(
+                            "ACPI: Failed to parse RSDP at translated 0x{:X} ({}) \
+                             or raw 0x{:X} ({}); current HHDM offset: 0x{:X}",
+                            rsdp_translated,
+                            e_translated,
+                            rsdp_phys,
+                            e_raw,
+                            hhdm_offset()
+                        );
+                        let bt = unsafe { dump16(rsdp_translated) };
+                        ulog!(
+                            "ACPI: bytes at translated 0x{:X}: \
+                             {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} \
+                             {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
+                            rsdp_translated,
+                            bt[0], bt[1], bt[2], bt[3], bt[4], bt[5], bt[6], bt[7],
+                            bt[8], bt[9], bt[10], bt[11], bt[12], bt[13], bt[14], bt[15]
+                        );
+                        let br = unsafe { dump16(rsdp_phys) };
+                        ulog!(
+                            "ACPI: bytes at raw 0x{:X}: \
+                             {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} \
+                             {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
+                            rsdp_phys,
+                            br[0], br[1], br[2], br[3], br[4], br[5], br[6], br[7],
+                            br[8], br[9], br[10], br[11], br[12], br[13], br[14], br[15]
+                        );
+                    }
+                },
+            }
+        }
         Err(e) => {
             ulog!("ACPI: {}", e);
-            return;
         }
-    };
+    }
 
-    // PROTOCOL.md documents the RSDP address as physical at exactly
-    // base revision 3 (what this kernel requests -- see
-    // limine.rs::BASE_REVISION) and HHDM-virtual at every other
-    // revision -- and the address really does come across
-    // untranslated (see limine::rsdp()'s doc comment), which is
-    // consistent with that. But translating it via the HHDM offset
-    // alone wasn't enough to make it validate in practice, so this
-    // tries both interpretations and logs which one (if either)
-    // actually worked, rather than silently guessing wrong the same
-    // way twice.
-    let rsdp_translated = phys_to_virt(rsdp_phys);
-    let root_table = match parse_rsdp(rsdp_translated) {
-        Ok(root) => {
-            ulog!(
-                "ACPI: RSDP valid at translated address 0x{:X} (physical 0x{:X})",
-                rsdp_translated,
-                rsdp_phys
-            );
-            root
+    if root_table.is_none() {
+        // Limine's own answer either wasn't provided, or didn't
+        // validate under either interpretation -- fall back to the
+        // classical, bootloader-independent RSDP discovery the ACPI
+        // spec itself defines (5.2.5.1): every x86 BIOS is required
+        // to place the RSDP in the first 1 KiB of the EBDA or in the
+        // main BIOS read-only area, so this works regardless of
+        // whatever's wrong with Limine's pointer or HHDM coverage of
+        // wherever it points.
+        match scan_bios_for_rsdp() {
+            Some(found_virt) => {
+                ulog!("ACPI: RSDP found via BIOS/EBDA scan at 0x{:X}", found_virt);
+                root_table = parse_rsdp(found_virt).ok();
+            }
+            None => {
+                ulog!("ACPI: BIOS/EBDA scan found no RSDP signature either");
+            }
         }
-        Err(e_translated) => match parse_rsdp(rsdp_phys) {
-            Ok(root) => {
-                ulog!(
-                    "ACPI: RSDP valid at raw/untranslated address 0x{:X} -- \
-                     translated address 0x{:X} did not validate: {}",
-                    rsdp_phys,
-                    rsdp_translated,
-                    e_translated
-                );
-                root
-            }
-            Err(e_raw) => {
-                ulog!(
-                    "ACPI: Failed to parse RSDP at translated 0x{:X} ({}) \
-                     or raw 0x{:X} ({}); current HHDM offset: 0x{:X}",
-                    rsdp_translated,
-                    e_translated,
-                    rsdp_phys,
-                    e_raw,
-                    hhdm_offset()
-                );
-                // Signature mismatch alone doesn't say whether we're
-                // reading real-but-wrong memory or something that
-                // isn't backed by RSDP data at all -- dump the raw
-                // bytes at both candidate addresses so the next log
-                // answers that directly instead of needing another
-                // round trip.
-                let bt = unsafe { dump16(rsdp_translated) };
-                ulog!(
-                    "ACPI: bytes at translated 0x{:X}: \
-                     {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} \
-                     {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
-                    rsdp_translated,
-                    bt[0], bt[1], bt[2], bt[3], bt[4], bt[5], bt[6], bt[7],
-                    bt[8], bt[9], bt[10], bt[11], bt[12], bt[13], bt[14], bt[15]
-                );
-                let br = unsafe { dump16(rsdp_phys) };
-                ulog!(
-                    "ACPI: bytes at raw 0x{:X}: \
-                     {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} \
-                     {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
-                    rsdp_phys,
-                    br[0], br[1], br[2], br[3], br[4], br[5], br[6], br[7],
-                    br[8], br[9], br[10], br[11], br[12], br[13], br[14], br[15]
-                );
-                return;
-            }
-        },
+    }
+
+    let root_table = match root_table {
+        Some(rt) => rt,
+        None => return,
     };
 
     match root_table {
