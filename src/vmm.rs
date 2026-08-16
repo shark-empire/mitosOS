@@ -502,9 +502,18 @@ pub fn handle_page_fault(fault_addr: usize, is_present: bool, is_user: bool) -> 
     // `phys_to_virt` is a no-op on aarch64 (permanent identity map) and
     // the necessary higher-half translation on x86_64 (see its doc
     // comment), so this one line is correct on both architectures.
-    unsafe {
-        core::ptr::write_bytes(crate::memory::phys_to_virt(frame) as *mut u8, 0, 4096);
-    }
+    // 1. Guard against null/invalid frame allocation from PMM
+if frame == 0 {
+    panic!("VMM: Physical Memory Manager returned frame 0x0 during page allocation!");
+}
+
+let virt_ptr = crate::memory::phys_to_virt(frame) as *mut u8;
+
+// 2. Perform the write safely
+unsafe {
+    core::ptr::write_bytes(virt_ptr, 0, 4096);
+}
+
 
     // 4. Map it in dynamically
     let flags = crate::memory::MapFlags {
