@@ -496,7 +496,7 @@ extern "C" fn background_worker_2() -> ! {
     loop {
         let mut uart = crate::uart::Uart::shared();
         let _ = core::fmt::Write::write_str(&mut uart, "[Worker 2: Tick]\n");
-        for _ in 0..200_000 {
+        for _ in 0..5 {
             core::hint::spin_loop();
         }
         crate::task::yield_now();
