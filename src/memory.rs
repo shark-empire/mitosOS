@@ -557,9 +557,12 @@ pub unsafe fn unmap_low_half_identity_map() {
 /// Explicit initialization entry point
 pub unsafe fn init_memory_subsystem(heap_start: usize, heap_size: usize) {
     unsafe {
-        HEAP_ALLOCATOR.lock().init(phys_to_virt(heap_start), heap_size);
+        // Pass the raw physical heap_start, allowing fallback_alloc 
+        // to handle the phys_to_virt translation later.
+        HEAP_ALLOCATOR.lock().init(heap_start, heap_size);
     }
 }
+
 
 /// Creates a new, isolated page table for a user process.
 pub unsafe fn create_process_page_table() -> Option<usize> {
