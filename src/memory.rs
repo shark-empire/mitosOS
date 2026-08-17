@@ -265,8 +265,40 @@ unsafe impl GlobalAlloc for Mutex<FastBlockAllocator> {
 
 pub struct BitmapAllocator<const N: usize> { bitmap: [u64; N] }
 impl<const N: usize> BitmapAllocator<N> {
-    pub const fn new() -> Self { Self { bitmap: [0; N] } }
-    
+    /// Frame 0 starts (and stays) permanently reserved -- see
+    /// `allocate_next_frame`'s doc comment for why this can't be left
+    /// to `protect_boot_memory`'s later reservation alone.
+    pub const fn new() -> Self {
+        let mut bitmap = [0u64; N];
+        if N > 0 {
+            bitmap[0] = 1;
+        }
+        Self { bitmap }
+    }
+
+    /// Frame index 0 (bit 0 of `bitmap[0]`) is permanently reserved
+    /// from construction onward (see `new()`) and this never hands it
+    /// out, regardless of what `protect_boot_memory` has or hasn't
+    /// reserved yet by the time this is first called.
+    ///
+    /// Bug history: this allocator starts all-zero, i.e. "every frame
+    /// free" including frame 0, and relied entirely on
+    /// `protect_boot_memory` reserving the first 1 MiB before
+    /// anything else called this. Confirmed via a GDB breakpoint at
+    /// the resulting crash site (compiler_builtins::mem::impls::
+    /// set_bytes, dest=0xffff800000000000 -- exactly phys_to_virt(0))
+    /// that frame 0 was in fact handed out and then zeroed as a
+    /// freshly "allocated" page-table frame. `protect_boot_memory`
+    /// does run before ELF/task loading, and `free_process_page_table`
+    /// (the only place frames get freed) checks every page-table
+    /// entry's present bit before extracting a physical address, so
+    /// neither of those has an obvious bug -- but relying on a single
+    /// ordering guarantee, decided in main.rs, to keep the single
+    /// most special physical address in the whole system out of
+    /// circulation is exactly the kind of fragile invariant that
+    /// breaks when boot sequencing changes later. Reserving it here
+    /// too, permanently, at the allocator's own construction, removes
+    /// the dependency on that ordering entirely.
     pub fn allocate_next_frame(&mut self) -> Option<usize> {
         for (i, val) in self.bitmap.iter_mut().enumerate() {
             if *val != !0 {
@@ -288,7 +320,16 @@ impl<const N: usize> BitmapAllocator<N> {
     /// check; out-of-range indices are silently ignored rather than
     /// panicking, since a bad address here would otherwise take the
     /// whole kernel down over a bookkeeping bug in a caller.
+    ///
+    /// Frame 0 is the one exception to "return it to the pool": it's
+    /// permanently reserved from construction (see `new()`) and never
+    /// actually gets released, even if something calls this with
+    /// frame_index 0 -- seeing that happen would itself mean a caller
+    /// somewhere thinks it owns frame 0, which should never be true.
     pub fn free_frame(&mut self, frame_index: usize) {
+        if frame_index == 0 {
+            return;
+        }
         let array_idx = frame_index / 64;
         let bit_idx = frame_index % 64;
         if array_idx < N { self.bitmap[array_idx] &= !(1 << bit_idx); }
