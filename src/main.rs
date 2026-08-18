@@ -141,52 +141,19 @@ fn kmain_common() -> ! {
     }
 
     unsafe {
-        // 1. Load the kernel's own GDT/TSS (ring-3 segments + the stack
-        //    the CPU uses on any trap taken from ring 3). Must run before
-        //    interrupts::init() -- the double-fault gate is set to use
-        //    IST1, which this sets up.
+              // 1. Load the kernel's own GDT/TSS ...
         #[cfg(target_arch = "x86_64")]
         gdt::init();
 
-        // 2. Install IDT/Vector table so the CPU can handle exceptions & IRQs.
+        // 2. Install IDT/Vector table ...
         interrupts::init();
         let _ = writeln!(uart, "[boot] 1: interrupts::init() returned");
 
-    
-        
-        #[cfg(target_arch = "x86_64")]
-        hal::init();
-
-        
-
-        // 2b. Tear down PML4[0]'s temporary identity mapping now that a
-        //     real IDT is live. On a Multiboot2 boot this is real: it
-        //     removes the mapping boot_multiboot2.s's trampoline built
-        //     to survive the paging-enable transition. On a Limine
-        //     boot it's a harmless no-op -- base revision 3 (what this
-        //     kernel requests) doesn't put anything at PML4[0] to begin
-        //     with. See memory::unmap_low_half_identity_map's doc
-        //     comment for why this has to run after interrupts::init(),
-        //     not before it, either way.
-        #[cfg(target_arch = "x86_64")]
-        memory::unmap_low_half_identity_map();
-
-        // 3. Initialize the heap allocator subsystem.
+        // 3. Initialize the heap allocator subsystem FIRST.
         memory::init_memory_subsystem(HEAP_START, HEAP_SIZE);
 
-        // ACPI init (RSDP -> XSDT/RSDT -> table walk) already happened
-        // as part of hal::init() above -- it used to be redundantly
-        // called again here too (a second, independent call into
-        // acpi::init(), on top of hal::init() calling it internally),
-        // which is exactly the kind of duplication that let one of the
-        // two RSDP-parsing bugs get fixed without the other.
-
-
-        // 3b. Reserve boot/kernel/heap memory in the frame allocator.
-        // This has to happen right here, before *anything* else gets a
-        // chance to call vmm_alloc_frame() -- it used to run much later
-        // (after PCI scan, a demo allocation, and AHCI init), so all of
-        // those were freely handing out frames from the "reserved" range.
+        // 3b. Reserve boot/kernel/heap memory SECOND.
+        // This MUST happen before hal::init() so the VMM doesn't hand out ACPI memory.
         let kernel_end_addr = &raw const _kernel_end as usize;
         #[cfg(target_arch = "x86_64")]
         {
@@ -203,6 +170,14 @@ fn kmain_common() -> ! {
         #[cfg(target_arch = "aarch64")]
         protect_boot_memory(0, kernel_end_addr, HEAP_START, HEAP_SIZE, None);
         let _ = writeln!(uart, "[boot] 2: memory subsystem + protect_boot_memory done");
+
+        // 4. NOW it is safe to initialize the HAL and parse ACPI.
+        #[cfg(target_arch = "x86_64")]
+        hal::init();
+
+        // 5. Tear down PML4[0]'s temporary identity mapping.
+        #[cfg(target_arch = "x86_64")]
+        memory::unmap_low_half_identity_map();
 
         // 3c. Bring the MMU up (AArch64 only)
         #[cfg(target_arch = "aarch64")]
@@ -493,12 +468,17 @@ fn park() -> ! {
 }
 
 extern "C" fn background_worker_2() -> ! {
-    loop {
-        let mut uart = crate::uart::Uart::shared();
+    let mut uart = crate::uart::Uart::shared();
+    
+    // Print exactly 5 times, yielding in between
+    for _ in 0..5 {
         let _ = core::fmt::Write::write_str(&mut uart, "[Worker 2: Tick]\n");
-        for _ in 0..5 {
-            core::hint::spin_loop();
-        }
+        crate::task::yield_now();
+    }
+
+    // Go quiet permanently so it doesn't flood the terminal
+    loop {
         crate::task::yield_now();
     }
 }
+
