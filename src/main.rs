@@ -154,19 +154,21 @@ fn kmain_common() -> ! {
 
         // 3b. Reserve boot/kernel/heap memory SECOND.
         // This MUST happen before hal::init() so the VMM doesn't hand out ACPI memory.
+                // 3b. Reserve boot/kernel/heap memory SECOND.
         let kernel_end_addr = &raw const _kernel_end as usize;
         #[cfg(target_arch = "x86_64")]
         {
             let kernel_phys_start = boot_info::kernel_phys_start();
             let kernel_phys_end = kernel_phys_start + (kernel_end_addr - boot_info::KERNEL_VMA);
             protect_boot_memory(
-                kernel_phys_start,
+                0, // Force protection from 0x0 to secure the lower 1MiB (EBDA/ACPI)
                 kernel_phys_end,
                 HEAP_START,
                 HEAP_SIZE,
                 boot_info::module(),
             );
         }
+
         #[cfg(target_arch = "aarch64")]
         protect_boot_memory(0, kernel_end_addr, HEAP_START, HEAP_SIZE, None);
         let _ = writeln!(uart, "[boot] 2: memory subsystem + protect_boot_memory done");
