@@ -275,6 +275,7 @@ pub fn alloc_frame() -> Option<usize> {
 
 /// Parses Limine's memory map response and frees only USABLE regions into the PMM.
 /// Always enforces a strict reservation on physical frames 0..256 (0x0 - 0x100000).
+#[cfg(target_arch = "x86_64")]⁠ 
 pub fn init_pmm_from_limine() -> Result<(), &'static str> {
     let memmap = crate::limine::memmap().ok_or("Limine memory map response unavailable")?;
     let mut pmm = PHYSICAL_PMM.lock();
@@ -295,6 +296,7 @@ pub fn init_pmm_from_limine() -> Result<(), &'static str> {
 
 /// Reclaims ACPI reclaimable and bootloader reclaimable memory regions into the
 /// PMM pool. Call this AFTER `hal::acpi::init()` finishes parsing tables.
+#[cfg(target_arch = "x86_64")]⁠ 
 pub fn reclaim_boot_memory() {
     if let Some(memmap) = crate::limine::memmap() {
         let mut pmm = PHYSICAL_PMM.lock();
