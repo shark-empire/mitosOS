@@ -3,6 +3,13 @@ name: kernel-boot-test
 on:
   push:
   pull_request:
+  workflow_dispatch:
+    inputs:
+      debug_enabled:
+        type: boolean
+        description: 'Open a tmate SSH session on the runner for interactive debugging'
+        required: false
+        default: false
 
 jobs:
   build-and-test:
@@ -123,6 +130,25 @@ jobs:
           # misreports as "likely a triple fault" since QEMU exits
           # immediately (eof) instead of booting.
           mkdir -p disk_image
+
+      - name: Setup tmate debug session
+        # Manual-trigger only (workflow_dispatch with debug_enabled checked)
+        # -- deliberately NOT gated on failure() or left unconditional, since
+        # either would open (and hold open) an SSH session on every ordinary
+        # push/PR run. Runs for both matrix legs, right before each one's
+        # boot-test step, so whichever target you're debugging already has
+        # its kernel/ISO/ramdisk staged -- for x86_64 that's mitosos.iso +
+        # disk_image/ in $PWD; for aarch64, kernel8.img. From inside the
+        # session you can run the exact qemu_flags this job would (see the
+        # matrix above, or `env | grep QEMU` won't show it -- it's built
+        # inline in the next step -- copy it from that step's source if
+        # needed), tweak it (e.g. swap -display none for a VNC/GTK display,
+        # add -monitor stdio, attach gdb via -s -S), or inspect disk_image/.
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
+        uses: mxschmitt/action-tmate@v3
+        timeout-minutes: 30
+        with:
+          limit-access-to-actor: true
 
       - name: Boot in QEMU and check serial output
         run: |
