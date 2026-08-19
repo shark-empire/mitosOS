@@ -18,14 +18,20 @@ jobs:
 
           - target: x86_64-unknown-none
             qemu_bin: qemu-system-x86_64
-            # -cdrom (not a raw disk) + explicit boot order pins boot-device
-            # selection instead of relying on QEMU's undocumented default,
-            # which is the kind of thing that can silently differ across
-            # QEMU/Ubuntu runner versions and manifests as a bare "BIOS
-            # never finds a bootable disk" hang -- indistinguishable from a
-            # real kernel bug in the serial capture, since BIOS boot-device
-            # messages go to the (disabled) VGA console, not serial.
-            qemu_flags: -M pc -m 256M -drive file=fat:rw:./disk_image,format=raw,if=ide -serial stdio -no-reboot -display none
+            # -boot order=d pins the CD-ROM as the boot device explicitly,
+            # instead of relying on QEMU's undocumented default ordering
+            # among candidate drives. This matters now that a second IDE
+            # drive (the FAT disk_image, unbootable -- no boot sector) is
+            # also present: without an explicit order, SeaBIOS's choice
+            # between the two is unspecified per-device bootindex
+            # fallback behavior, so it can silently differ across
+            # QEMU/Ubuntu runner versions and manifest as a bare "BIOS
+            # never finds a bootable disk" hang -- indistinguishable from
+            # a real kernel bug in the serial capture, since BIOS
+            # boot-device messages go to the (disabled) VGA console, not
+            # serial, and a stuck BIOS never triggers QEMU's `eof`/exit
+            # (only a "waiting to boot" timeout).
+            qemu_flags: -M pc -m 256M -drive file=fat:rw:./disk_image,format=raw,if=ide -serial stdio -no-reboot -display none -boot order=d
 
             bin_name: mitosos
 
