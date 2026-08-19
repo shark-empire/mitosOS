@@ -106,6 +106,18 @@ jobs:
       
 
           
+      - name: Create scratch FAT disk image (x86_64 only)
+        if: matrix.target == 'x86_64-unknown-none'
+        run: |
+          # QEMU's `fat:rw:<dir>` driver mounts an *existing* host
+          # directory as a virtual FAT disk -- it never creates one
+          # itself. Without this, QEMU fails at argument-parsing time
+          # ("Could not read directory ./disk_image") before the
+          # kernel ever runs, which the expect script then
+          # misreports as "likely a triple fault" since QEMU exits
+          # immediately (eof) instead of booting.
+          mkdir -p disk_image
+
       - name: Boot in QEMU and check serial output
         run: |
           set -o pipefail
