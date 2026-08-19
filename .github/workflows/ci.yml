@@ -25,7 +25,7 @@ jobs:
             # never finds a bootable disk" hang -- indistinguishable from a
             # real kernel bug in the serial capture, since BIOS boot-device
             # messages go to the (disabled) VGA console, not serial.
-            qemu_flags: -M pc -m 256M -cdrom mitosos.iso -drive file=fat:rw:./disk_image,format=raw,if=ide -serial stdio -no-reboot -display none
+            qemu_flags: -M pc -m 256M -drive file=fat:rw:./disk_image,format=raw,if=ide -serial stdio -no-reboot -display none
 
             bin_name: mitosos
 
