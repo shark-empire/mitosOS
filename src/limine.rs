@@ -24,6 +24,8 @@
 //! etc.) are what main.rs actually calls to read them back.
 
 use core::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
+use limine::request::MemoryMapRequest;
+use limine::response::MemoryMapResponse;
 
 const COMMON_MAGIC_0: u64 = 0xc7b1dd30df4c8b88;
 const COMMON_MAGIC_1: u64 = 0x0a82e883a194f07b;
@@ -212,21 +214,25 @@ struct MemmapRequest {
     response: AtomicPtr<MemmapResponse>,
 }
 
+// MAKE THIS PUBLIC so memory.rs can read `entry_count` and `entries`
 #[repr(C)]
-struct MemmapResponse {
-    revision: u64,
-    entry_count: u64,
-    entries: *const *const MemmapEntry,
+pub struct MemmapResponse {
+    pub revision: u64,
+    pub entry_count: u64,
+    pub entries: *const *const MemmapEntry,
 }
 
+// MAKE THIS PUBLIC so memory.rs can read `base`, `length`, and `typ`
 #[repr(C)]
-struct MemmapEntry {
-    base: u64,
-    length: u64,
-    typ: u64,
+pub struct MemmapEntry {
+    pub base: u64,
+    pub length: u64,
+    pub typ: u64,
 }
 
-const MEMMAP_USABLE: u64 = 0;
+// MAKE THIS PUBLIC if memory.rs needs to filter by usable memory
+pub const MEMMAP_USABLE: u64 = 0;
+pub const MEMMAP_BOOTLOADER_RECLAIMABLE: u64 = 5; // Add this if memory.rs needs to reclaim bootloader memory
 
 #[used]
 #[unsafe(link_section = ".limine_requests")]
@@ -236,11 +242,16 @@ static MEMMAP_REQUEST: MemmapRequest = MemmapRequest {
     response: AtomicPtr::new(core::ptr::null_mut()),
 };
 
+/// Returns the raw memory map response from Limine so the physical memory manager can parse it.
+pub fn memmap() -> Option<&'static MemmapResponse> {
+    let resp = MEMMAP_REQUEST.response.load(Ordering::SeqCst);
+    if resp.is_null() {
+        return None;
+    }
+    Some(unsafe { &*resp })
+}
+
 /// (entry count, total usable bytes) -- a summary, not the full map.
-/// Enough for a boot banner; a real physical frame allocator wired to
-/// this memory map is natural follow-up work (see src/memory.rs,
-/// which currently takes a single fixed (start, size) region rather
-/// than a bootloader-provided map) but is out of scope here.
 pub fn memmap_summary() -> Option<(usize, u64)> {
     let resp = MEMMAP_REQUEST.response.load(Ordering::SeqCst);
     if resp.is_null() {
@@ -252,8 +263,6 @@ pub fn memmap_summary() -> Option<(usize, u64)> {
     }
     let mut usable = 0u64;
     for i in 0..resp.entry_count {
-        // SAFETY: `entries` points to `entry_count` valid entry
-        // pointers, per the response's contract.
         let entry_ptr = unsafe { *resp.entries.add(i as usize) };
         if entry_ptr.is_null() {
             continue;
@@ -265,6 +274,7 @@ pub fn memmap_summary() -> Option<(usize, u64)> {
     }
     Some((resp.entry_count as usize, usable))
 }
+
 
 // --- Module (used for the ramdisk; see limine.conf's module_path) -------
 
