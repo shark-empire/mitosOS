@@ -132,33 +132,11 @@ jobs:
           mkdir -p disk_image
 
       - name: Setup tmate debug session
-        # Manual-trigger only (workflow_dispatch with debug_enabled checked)
-        # -- deliberately NOT gated on failure() or left unconditional, since
-        # either would open (and hold open) an SSH session on every ordinary
-        # push/PR run. Runs for both matrix legs, right before each one's
-        # boot-test step, so whichever target you're debugging already has
-        # its kernel/ISO/ramdisk staged -- for x86_64 that's mitosos.iso +
-        # disk_image/ in $PWD; for aarch64, kernel8.img. From inside the
-        # session you can run the exact qemu_flags this job would (see the
-        # matrix above, or `env | grep QEMU` won't show it -- it's built
-        # inline in the next step -- copy it from that step's source if
-        # needed), tweak it (e.g. swap -display none for a VNC/GTK display,
-        # add -monitor stdio, attach gdb via -s -S), or inspect disk_image/.
-        #
-        # detached: true -- by default this action BLOCKS the step (and so
-        # the rest of the job) until either someone connects and exits the
-        # session, or it hits a timeout. Detached mode instead just starts
-        # tmate, prints the connection string, and returns immediately, so
-        # the boot-test step (and everything after it) keeps running on its
-        # own right away. The session itself stays reachable throughout the
-        # rest of the job via this action's post-job hook, and is torn down
-        # once the job finishes -- so you can SSH in at any point up to then,
-        # whether or not the automated boot-test step has already failed.
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
+        if: matrix.target == 'x86_64-unknown-none'
         uses: mxschmitt/action-tmate@v3
         with:
           limit-access-to-actor: true
-          detached: true
+          detached: false
 
       - name: Boot in QEMU and check serial output
         run: |
