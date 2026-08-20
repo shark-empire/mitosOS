@@ -299,6 +299,28 @@ pub fn init_pmm_from_limine() -> Result<(), &'static str> {
 
 
 
+/// AArch64 has no bootloader-supplied memory map to consult -- boot.s
+/// jumps straight to kmain with the MMU off (see mmu.rs's module doc),
+/// there's no Limine, no ATAGS/DTB parsing here yet. Since
+/// BitmapAllocator::new() now starts with every frame marked reserved
+/// (see its doc comment), aarch64 needs its own explicit "here's what's
+/// usable" step, or every vmm_alloc_frame() call fails immediately --
+/// which is exactly what was happening: mmu::init()'s very first
+/// allocation (the TTBR0 root table) had nothing to draw from.
+/// Frees a fixed range matching the PMM's own tracking ceiling
+/// (BitmapAllocator<1024> == 65536 frames == 256MiB); both QEMU's
+/// raspi3b machine and real Pi 3B hardware provide at least this much,
+/// and it's not possible to track more than this regardless, so there's
+/// no reason to under-free. protect_boot_memory() (called right after
+/// this, from main.rs) re-reserves the boot-critical sub-ranges (low
+/// 1MiB, kernel image, heap) on top, same as the x86_64 path does after
+/// init_pmm_from_limine().
+#[cfg(target_arch = "aarch64")]
+pub fn init_pmm_static() {
+    const TRACKED_FRAMES: usize = 1024 * 64; // matches BitmapAllocator<1024>'s full bit capacity
+    PHYSICAL_PMM.lock().free_range(0, TRACKED_FRAMES);
+}
+
 /// Reclaims ACPI reclaimable and bootloader reclaimable memory regions into the
 /// PMM pool. Call this AFTER `hal::acpi::init()` finishes parsing tables.
 #[cfg(target_arch = "x86_64")]
