@@ -12,6 +12,9 @@ pub mod fat32;
 pub mod fat32_adapter;
 
 #[cfg(target_arch = "x86_64")]
+pub mod mbr;
+
+#[cfg(target_arch = "x86_64")]
 pub mod ata;
 
 /// The kind of entry a `FileNode` represents.
