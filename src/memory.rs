@@ -285,7 +285,8 @@ pub fn init_pmm_from_limine() -> Result<(), &'static str> {
         if entry_ptr.is_null() { continue; }
         let entry = unsafe { &*entry_ptr };
 
-        if entry.typ == crate::limine::MEMMAP_USABLE {
+        // Using your local memory.rs constant here
+        if entry.typ == LIMINE_MEMMAP_USABLE {
             let start_frame = (entry.base as usize) / PAGE_SIZE;
             let count = (entry.length as usize) / PAGE_SIZE;
             pmm.free_range(start_frame, count);
@@ -295,6 +296,7 @@ pub fn init_pmm_from_limine() -> Result<(), &'static str> {
     pmm.reserve_range(0, 256);
     Ok(())
 }
+
 
 
 /// Reclaims ACPI reclaimable and bootloader reclaimable memory regions into the
@@ -309,8 +311,9 @@ pub fn reclaim_boot_memory() {
             if entry_ptr.is_null() { continue; }
             let entry = unsafe { &*entry_ptr };
 
-            if entry.typ == crate::limine::MEMMAP_ACPI_RECLAIMABLE 
-                || entry.typ == crate::limine::MEMMAP_BOOTLOADER_RECLAIMABLE 
+            // Using your local memory.rs constants here
+            if entry.typ == LIMINE_MEMMAP_ACPI_RECLAIMABLE 
+                || entry.typ == LIMINE_MEMMAP_BOOTLOADER_RECLAIMABLE 
             {
                 let start_frame = (entry.base as usize) / PAGE_SIZE;
                 let count = (entry.length as usize) / PAGE_SIZE;
@@ -320,6 +323,7 @@ pub fn reclaim_boot_memory() {
         pmm.reserve_range(0, 256);
     }
 }
+
 
 
 pub unsafe fn protect_boot_memory(
