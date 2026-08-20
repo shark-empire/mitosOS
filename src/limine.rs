@@ -24,8 +24,6 @@
 //! etc.) are what main.rs actually calls to read them back.
 
 use core::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
-use limine::request::MemoryMapRequest;
-use limine::response::MemoryMapResponse;
 
 const COMMON_MAGIC_0: u64 = 0xc7b1dd30df4c8b88;
 const COMMON_MAGIC_1: u64 = 0x0a82e883a194f07b;
