@@ -30,26 +30,77 @@ const COMMON_MAGIC_1: u64 = 0x0a82e883a194f07b;
 
 // --- Base revision tag -----------------------------------------------------
 //
-// Requesting revision 3: the highest revision every bootloader that
-// supports base revision 3 or later is *guaranteed* to fall back to
-// even if it doesn't recognise a newer one (PROTOCOL.md, "Base
-// Revisions"). Every x86-64-relevant guarantee this kernel relies on
-// (restrictive HHDM, the modern memory map layout) is already in
-// place as of revision 3; revisions 4-6 add guarantees that are
-// either not used here (ACPI-region HHDM mapping) or aarch64/riscv64
-// /loongarch64-only. Bumping this later is a one-line change.
+// Requesting revision 4, not 3: base revision 3's HHDM is
+// *restrictive* (only Usable / Bootloader-reclaimable /
+// Executable-and-modules / Framebuffer memory map regions are mapped)
+// with no guarantee ACPI tables live in any of those -- BIOS firmware
+// conventionally puts the RSDP in the EBDA or the main BIOS ROM area,
+// both typically typed Reserved, which base revision 3 simply does
+// not map anywhere in HHDM (and identity mapping was dropped back at
+// revision 1). That's not a corner case, it's the default outcome of
+// BIOS-boot ACPI on revision 3, and it's exactly the failure this
+// kernel used to hit (see hal::acpi's doc comment). Revision 4 fixes
+// this at the protocol level: it guarantees RSDP/RSDT/XSDT/FADT/FACS
+// /DSDT all land in a region HHDM does map (ACPI_RECLAIMABLE,
+// ACPI_NVS, or the new RESERVED_MAPPED type), and reverts the RSDP
+// address to HHDM-virtual again (physical addressing was unique to
+// revision 3 -- see PROTOCOL.md's RSDP feature). Every other
+// x86-64-relevant guarantee this kernel relies on is unchanged from
+// revision 3; revisions 5-6 add guarantees that are either not used
+// here yet (stricter machine state, IOMMU handling) or
+// aarch64/riscv64/loongarch64-only. Bumping further is a one-line
+// change plus re-auditing loaded_base_revision()'s callers.
+const REQUESTED_BASE_REVISION: u64 = 4;
+
+/// Second component of the tag as Limine finds it at compile time --
+/// `loaded_base_revision()` below uses this to tell "the bootloader
+/// overwrote this with the actually-loaded revision number" apart
+/// from "the bootloader never touched this field" (PROTOCOL.md's
+/// `LIMINE_LOADED_BASE_REVISION_VALID`).
+const BASE_REVISION_MAGIC_1: u64 = 0x6a7b384944536bdc;
+
 #[used]
 #[unsafe(link_section = ".limine_requests")]
 static BASE_REVISION: [AtomicU64; 3] = [
     AtomicU64::new(0xf9562b2d5c95a6c8),
-    AtomicU64::new(0x6a7b384944536bdc),
-    AtomicU64::new(3),
+    AtomicU64::new(BASE_REVISION_MAGIC_1),
+    AtomicU64::new(REQUESTED_BASE_REVISION),
 ];
 
 /// True if Limine reported it loaded us with the base revision we
 /// asked for (its 3rd component is left as-is, non-zero, otherwise).
 pub fn base_revision_supported() -> bool {
     BASE_REVISION[2].load(Ordering::SeqCst) == 0
+}
+
+/// The base revision this kernel is *actually* running under --
+/// not necessarily REQUESTED_BASE_REVISION. Needed anywhere the wire
+/// format of a feature changes with base revision (RSDP/SMBIOS/EFI
+/// -system-table addressing -- see hal::acpi::init()), since those
+/// need to know which shape they actually got, not just whether the
+/// exact request was granted.
+///
+/// - If the request was granted exactly (`base_revision_supported()`),
+///   the loaded revision is simply the one requested.
+/// - Otherwise, PROTOCOL.md requires any bootloader that itself
+///   supports base revision 3+ to still load at *at least* revision 3
+///   even when it can't grant a higher request, and to overwrite this
+///   tag's 2nd component with whichever revision it actually used.
+///   `BASE_REVISION_MAGIC_1` still being present means either a
+///   bootloader that predates revision 3 (and thus this whole
+///   reporting mechanism), or, in principle, a spec violation -- both
+///   indistinguishable and both meaning "unknown", so this returns 0
+///   for that case rather than guessing.
+pub fn loaded_base_revision() -> u64 {
+    if base_revision_supported() {
+        return REQUESTED_BASE_REVISION;
+    }
+    let reported = BASE_REVISION[1].load(Ordering::SeqCst);
+    if reported != BASE_REVISION_MAGIC_1 {
+        reported
+    } else {
+        0
+    }
 }
 
 // --- HHDM (Higher Half Direct Map) ---------------------------------------
@@ -376,22 +427,17 @@ static RSDP_REQUEST: RsdpRequest = RsdpRequest {
 };
 
 /// Returns the ACPI RSDP address exactly as Limine reported it --
-/// physical, per PROTOCOL.md, at exactly base revision 3 (what
-/// mitosOS requests -- see BASE_REVISION above; every other revision,
-/// old or 4+, gets it HHDM-virtual instead).
+/// physical, per PROTOCOL.md, *only* if the bootloader actually
+/// loaded this kernel at exactly base revision 3; HHDM-virtual at
+/// every other revision, including REQUESTED_BASE_REVISION (4) above,
+/// which is what a normal boot will actually be running under.
 ///
-/// Deliberately *not* translated here anymore: an earlier version of
-/// this function did the phys_to_virt translation internally and
-/// returned a virtual pointer, on the (PROTOCOL.md-documented, and
-/// confirmed correct by this address being raw/untranslated at the
-/// wire) assumption that translated-physical was all that was needed
-/// -- but that alone wasn't sufficient to make the RSDP parse
-/// correctly in practice (still failed after translating), so
-/// hal::acpi::init() now owns both the translation *and* a fallback
-/// to the raw address if the translated one doesn't validate,
-/// logging which one actually worked. Keeping this function a
-/// faithful, untranslated passthrough of what Limine gave us is what
-/// makes that fallback possible.
+/// Deliberately *not* translated here: which interpretation applies
+/// depends on `loaded_base_revision()`, not on anything this function
+/// alone knows, so hal::acpi::init() owns that decision (and a
+/// defensive fallback to the other interpretation if the first
+/// doesn't validate). Keeping this function a faithful, untranslated
+/// passthrough of what Limine gave us is what makes that possible.
 pub fn rsdp() -> Option<usize> {
     let resp = RSDP_REQUEST.response.load(Ordering::SeqCst);
 
