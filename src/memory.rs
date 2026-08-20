@@ -280,19 +280,22 @@ pub fn init_pmm_from_limine() -> Result<(), &'static str> {
     let memmap = crate::limine::memmap().ok_or("Limine memory map response unavailable")?;
     let mut pmm = PHYSICAL_PMM.lock();
 
-    for entry in memmap.entries() {
-        if entry.typ == LIMINE_MEMMAP_USABLE {
+    for i in 0..memmap.entry_count {
+        let entry_ptr = unsafe { *memmap.entries.add(i as usize) };
+        if entry_ptr.is_null() { continue; }
+        let entry = unsafe { &*entry_ptr };
+
+        if entry.typ == crate::limine::MEMMAP_USABLE {
             let start_frame = (entry.base as usize) / PAGE_SIZE;
             let count = (entry.length as usize) / PAGE_SIZE;
             pmm.free_range(start_frame, count);
         }
     }
 
-    // Permanently reserve physical [0x0, 0x100000) (Lower 1 MiB) for BIOS/EBDA/Interrupt tables.
     pmm.reserve_range(0, 256);
-
     Ok(())
 }
+
 
 /// Reclaims ACPI reclaimable and bootloader reclaimable memory regions into the
 /// PMM pool. Call this AFTER `hal::acpi::init()` finishes parsing tables.
@@ -300,19 +303,24 @@ pub fn init_pmm_from_limine() -> Result<(), &'static str> {
 pub fn reclaim_boot_memory() {
     if let Some(memmap) = crate::limine::memmap() {
         let mut pmm = PHYSICAL_PMM.lock();
-        for entry in memmap.entries() {
-            if entry.typ == LIMINE_MEMMAP_ACPI_RECLAIMABLE 
-                || entry.typ == LIMINE_MEMMAP_BOOTLOADER_RECLAIMABLE 
+        
+        for i in 0..memmap.entry_count {
+            let entry_ptr = unsafe { *memmap.entries.add(i as usize) };
+            if entry_ptr.is_null() { continue; }
+            let entry = unsafe { &*entry_ptr };
+
+            if entry.typ == crate::limine::MEMMAP_ACPI_RECLAIMABLE 
+                || entry.typ == crate::limine::MEMMAP_BOOTLOADER_RECLAIMABLE 
             {
                 let start_frame = (entry.base as usize) / PAGE_SIZE;
                 let count = (entry.length as usize) / PAGE_SIZE;
                 pmm.free_range(start_frame, count);
             }
         }
-        // Protect lower 1 MiB under all circumstances
         pmm.reserve_range(0, 256);
     }
 }
+
 
 pub unsafe fn protect_boot_memory(
     kernel_phys_start: usize,
