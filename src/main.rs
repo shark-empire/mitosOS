@@ -131,6 +131,12 @@ fn kmain_common() -> ! {
             );
         }
 
+        // 3a (aarch64). No bootloader memmap to parse here -- free the PMM's
+        // trackable range as usable RAM before anything tries to allocate
+        // from it. See init_pmm_static's doc comment.
+        #[cfg(target_arch = "aarch64")]
+        memory::init_pmm_static();
+
         #[cfg(target_arch = "aarch64")]
         protect_boot_memory(0, kernel_end_addr, HEAP_START, HEAP_SIZE, None);
         let _ = writeln!(uart, "[boot] 2: memory subsystem + protect_boot_memory done");
