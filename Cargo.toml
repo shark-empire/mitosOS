@@ -26,7 +26,7 @@ spin = "0.9"
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86_64 = "0.15.2"
-limine = "0.6.5"
+
 # Limine + Multiboot2 boot support (src/limine.rs, src/boot_multiboot2.s,
 # src/boot_info.rs) is hand-written directly against limine-protocol's
 # PROTOCOL.md and the Multiboot2 spec rather than an external crate, so
