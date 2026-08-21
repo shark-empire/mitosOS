@@ -217,7 +217,7 @@ fn start_one_ap(apic_id: u32, cpu_index: usize, target_cr3: u64) -> bool {
 
     write_param_u64(PARAM_CR3, target_cr3 & !0xFFF);
     write_param_u64(PARAM_STACK_TOP, stack_top & !0xF); // 16-byte align, SysV ABI convention
-    write_param_u64(PARAM_ENTRY, rust_ap_entry as usize as u64);
+    write_param_u64(PARAM_ENTRY, rust_ap_entry as *const () as usize as u64);
     write_param_u64(PARAM_CPU_INDEX, cpu_index as u64);
 
     AP_ONLINE[cpu_index].store(false, Ordering::SeqCst);
