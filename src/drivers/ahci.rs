@@ -6,14 +6,16 @@
 #[cfg(target_arch = "x86_64")]
 use x86_64::structures::idt::InterruptStackFrame;
 
-
 use core::ptr::{read_volatile, write_volatile};
-use core::sync::atomic::{fence, AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{compiler_fence, fence, AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use crate::addr::{PhysAddr, VirtAddr};
 
 // =========================================================================
-// Global IRQ Completion State
+// Global IRQ Completion & Controller State
 // =========================================================================
+
+/// Dynamic Virtual Base Address of AHCI MMIO mapped space for IRQ Dispatch
+static AHCI_BASE_VIRT: AtomicUsize = AtomicUsize::new(0);
 
 /// Wait-queue state array for active slots (32 Command Slots per port)
 static SLOT_COMPLETION: [AtomicBool; 32] = [const { AtomicBool::new(false) }; 32];
@@ -300,6 +302,9 @@ impl AhciPort {
     }
 
     fn build_prdt(table: &mut HbaCmdTable, buf: &mut [u8], hal: &impl Hal) -> Result<u16, AhciError> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
         if buf.len() > MAX_TRANSFER_BYTES {
             return Err(AhciError::BufferTooLargeForOneCommand);
         }
@@ -320,7 +325,8 @@ impl AhciPort {
             prdt.dba = phys.as_u64() as u32;
             prdt.dbau = (phys.as_u64() >> 32) as u32;
             prdt.reserved0 = 0;
-            prdt.dbc = ((chunk as u32 - 1) & 0x003F_FFFF) | (1 << 31);
+            // DBC is 0-indexed: (chunk - 1). Bit 31 enables Interrupt on Completion (IOC)
+            prdt.dbc = (((chunk as u32).saturating_sub(1)) & 0x003F_FFFF) | (1 << 31);
 
             offset += chunk;
             count += 1;
@@ -351,7 +357,7 @@ impl AhciPort {
         PENDING_SLOTS.fetch_or(1 << (slot as u32), Ordering::SeqCst);
 
         let table = self.cmd_table(slot);
-        let prdt_count = if buf.is_empty() { 0 } else { Self::build_prdt(table, buf, hal)? };
+        let prdt_count = Self::build_prdt(table, buf, hal)?;
 
         let fis_dwords = (core::mem::size_of::<FisRegH2D>() / 4) as u32;
         let header = self.cmd_header(slot);
@@ -376,10 +382,26 @@ impl AhciPort {
         fence(Ordering::SeqCst);
         self.regs.write(PORT_CI, 1 << slot);
 
-        // Wait non-blockingly via IRQ signal feedback instead of continuous port status polling
+        // Polling loop with timeout fallback in case interrupts are disabled or dropped
+        let mut timeout_us = 2_000_000u32;
         while !SLOT_COMPLETION[slot as usize].load(Ordering::Acquire) {
-            core::hint::spin_loop();
+            // Software check: If PORT_CI bit dropped, hardware completed command without IRQ firing
+            if (self.regs.read(PORT_CI) & (1 << slot)) == 0 {
+                SLOT_COMPLETION[slot as usize].store(true, Ordering::Release);
+                PENDING_SLOTS.fetch_and(!(1 << slot), Ordering::Release);
+                break;
+            }
+
+            hal.wait_micros(10);
+            if timeout_us <= 10 {
+                PENDING_SLOTS.fetch_and(!(1 << slot), Ordering::Release);
+                return Err(AhciError::CommandTimeout);
+            }
+            timeout_us -= 10;
         }
+
+        // Prevent compiler optimization from reordering access to the output buffer prior to completion
+        compiler_fence(Ordering::SeqCst);
 
         let tfd = self.regs.read(PORT_TFD);
         if tfd & ATA_STS_ERR != 0 {
@@ -448,6 +470,9 @@ impl AhciController {
         if vs == 0 || vs == 0xFFFF_FFFF {
             return Err(AhciError::NotAnAhciController);
         }
+
+        // Store virtual MMIO base globally for top-level interrupt dispatchers
+        AHCI_BASE_VIRT.store(mmio.as_u64() as usize, Ordering::Release);
 
         Self::bios_os_handoff(hba, hal);
 
@@ -606,84 +631,99 @@ impl AhciController {
 /// Global Top-Level AHCI Interrupt Handler for x86_64 (Registered in IDT)
 #[cfg(target_arch = "x86_64")]
 #[unsafe(no_mangle)]
-pub extern "x86-interrupt" fn ahci_irq_handler(_frame: x86_64::structures::idt::InterruptStackFrame) {
-    // See memory::phys_to_virt's doc comment: no permanent identity
-    // map on x86_64, so this can't be a compile-time constant --
-    // Limine's HHDM offset is bootloader-chosen and varies.
-    let ahci_base = crate::memory::phys_to_virt(0x4000_0000) as *mut u32; // Active HBA MMIO Higher-Half Base
-    
+pub extern "x86-interrupt" fn ahci_irq_handler(_frame: InterruptStackFrame) {
+    let base_addr = AHCI_BASE_VIRT.load(Ordering::Acquire);
+    if base_addr == 0 {
+        return;
+    }
+
+    let ahci_base = base_addr as *mut u32;
+
     unsafe {
         let is_ptr = ahci_base.add(HBA_IS / 4);
         let active_ports = read_volatile(is_ptr);
 
-        if active_ports & 1 != 0 {
-            let port0_base = ahci_base.add(0x100 / 4);
-            let port_is_ptr = port0_base.add(PORT_IS / 4);
-            let interrupt_status = read_volatile(port_is_ptr);
+        if active_ports != 0 {
+            // Iterate over all active ports indicated in HBA_IS
+            for port_idx in 0..32 {
+                if (active_ports & (1 << port_idx)) != 0 {
+                    let port_base = ahci_base.add((HBA_PORT_BASE + port_idx * HBA_PORT_SIZE) / 4);
+                    let port_is_ptr = port_base.add(PORT_IS / 4);
+                    let interrupt_status = read_volatile(port_is_ptr);
 
-            // Write 1 to clear port interrupt status
-            write_volatile(port_is_ptr, interrupt_status);
+                    // Acknowledge port interrupt status (Write 1 to clear)
+                    write_volatile(port_is_ptr, interrupt_status);
 
-            let port_ci_ptr = port0_base.add(PORT_CI / 4);
-            let active_slots = read_volatile(port_ci_ptr);
+                    let port_ci_ptr = port_base.add(PORT_CI / 4);
+                    let active_slots = read_volatile(port_ci_ptr);
 
-            // Safely determine completion by comparing software-pending state against hardware PORT_CI
-            let pending = PENDING_SLOTS.load(Ordering::Acquire);
-            let completed = pending & !active_slots;
-            
-            if completed != 0 {
-                PENDING_SLOTS.fetch_and(!completed, Ordering::Release);
-                for slot in 0..32 {
-                    if (completed & (1 << slot)) != 0 {
-                        SLOT_COMPLETION[slot].store(true, Ordering::Release);
+                    // Safely determine completion by comparing software-pending state against hardware PORT_CI
+                    let pending = PENDING_SLOTS.load(Ordering::Acquire);
+                    let completed = pending & !active_slots;
+
+                    if completed != 0 {
+                        PENDING_SLOTS.fetch_and(!completed, Ordering::Release);
+                        for slot in 0..32 {
+                            if (completed & (1 << slot)) != 0 {
+                                SLOT_COMPLETION[slot].store(true, Ordering::Release);
+                            }
+                        }
                     }
                 }
             }
+
+            // Acknowledge controller global interrupt status bit mask
+            write_volatile(is_ptr, active_ports);
         }
 
-        // Send End of Interrupt (EOI) to Local APIC. 0xFEE000B0 (LAPIC
-        // base 0xFEE00000 + EOI register offset 0xB0) is an x86
-        // architectural constant, true on every system regardless of
-        // bootloader -- only the higher-half offset needs translating.
+        // Send End of Interrupt (EOI) to Local APIC
         let lapic_eoi = crate::memory::phys_to_virt(0xFEE0_00B0) as *mut u32;
         write_volatile(lapic_eoi, 0);
     }
 }
 
-
 /// Global Top-Level AHCI Interrupt Handler for AArch64 (GIC / Standard C ABI)
 #[cfg(target_arch = "aarch64")]
 #[unsafe(no_mangle)]
 pub extern "C" fn ahci_irq_handler() {
-    // AArch64 GIC IRQ handling logic
-    let ahci_base = 0xFFFF_8000_4000_0000 as *mut u32;
+    let base_addr = AHCI_BASE_VIRT.load(Ordering::Acquire);
+    if base_addr == 0 {
+        return;
+    }
+
+    let ahci_base = base_addr as *mut u32;
 
     unsafe {
         let is_ptr = ahci_base.add(HBA_IS / 4);
         let active_ports = read_volatile(is_ptr);
 
-        if active_ports & 1 != 0 {
-            let port0_base = ahci_base.add(0x100 / 4);
-            let port_is_ptr = port0_base.add(PORT_IS / 4);
-            let interrupt_status = read_volatile(port_is_ptr);
+        if active_ports != 0 {
+            for port_idx in 0..32 {
+                if (active_ports & (1 << port_idx)) != 0 {
+                    let port_base = ahci_base.add((HBA_PORT_BASE + port_idx * HBA_PORT_SIZE) / 4);
+                    let port_is_ptr = port_base.add(PORT_IS / 4);
+                    let interrupt_status = read_volatile(port_is_ptr);
 
-            write_volatile(port_is_ptr, interrupt_status);
+                    write_volatile(port_is_ptr, interrupt_status);
 
-            let port_ci_ptr = port0_base.add(PORT_CI / 4);
-            let active_slots = read_volatile(port_ci_ptr);
+                    let port_ci_ptr = port_base.add(PORT_CI / 4);
+                    let active_slots = read_volatile(port_ci_ptr);
 
-            // Safely determine completion by comparing software-pending state against hardware PORT_CI
-            let pending = PENDING_SLOTS.load(Ordering::Acquire);
-            let completed = pending & !active_slots;
-            
-            if completed != 0 {
-                PENDING_SLOTS.fetch_and(!completed, Ordering::Release);
-                for slot in 0..32 {
-                    if (completed & (1 << slot)) != 0 {
-                        SLOT_COMPLETION[slot].store(true, Ordering::Release);
+                    let pending = PENDING_SLOTS.load(Ordering::Acquire);
+                    let completed = pending & !active_slots;
+
+                    if completed != 0 {
+                        PENDING_SLOTS.fetch_and(!completed, Ordering::Release);
+                        for slot in 0..32 {
+                            if (completed & (1 << slot)) != 0 {
+                                SLOT_COMPLETION[slot].store(true, Ordering::Release);
+                            }
+                        }
                     }
                 }
             }
+
+            write_volatile(is_ptr, active_ports);
         }
     }
 }
