@@ -8,6 +8,27 @@ fn main() {
     if target.contains("x86_64") {
         println!("cargo:rerun-if-changed=src/boot_x86.s");
         println!("cargo:rerun-if-changed=src/boot_multiboot2.s");
+        println!("cargo:rerun-if-changed=src/smp_trampoline.s");
+
+        // 0. Assemble the SMP AP trampoline as a *flat* binary (not an
+        // ELF object -- it's never linked; hal::smp::start_aps() copies
+        // these raw bytes straight into a low physical page at runtime
+        // and jumps the AP directly into them). Kept separate from the
+        // ELF objects below, which do get linked into the kernel image
+        // itself.
+        let status_trampoline = Command::new("nasm")
+            .args([
+                "-f",
+                "bin",
+                "src/smp_trampoline.s",
+                "-o",
+                &format!("{out_dir}/smp_trampoline.bin"),
+            ])
+            .status()
+            .expect("nasm failed to execute");
+        if !status_trampoline.success() {
+            panic!("NASM assembly of smp_trampoline.s failed");
+        }
 
         // 1. Assemble with NASM
         let status1 = Command::new("nasm")
