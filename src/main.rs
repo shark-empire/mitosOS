@@ -358,8 +358,34 @@ fn kmain_common() -> ! {
         }
     };
 
-    if let Some(dev) = block_device {
-        match crate::fs::fat32::Fat32FileSystem::mount(dev) {
+    if let Some(mut dev) = block_device {
+        // Real disks (and QEMU's vvfat `if=ide` driver) present an MBR
+        // partition table at LBA 0, not a bare FAT boot sector -- see
+        // fs::mbr's doc comment for why mounting directly at LBA 0
+        // instead produced "Unsupported sector size" here. Probe for
+        // one first so the FAT driver gets pointed at the actual
+        // volume.
+        let mount_result = match crate::fs::mbr::find_first_partition_lba(&mut *dev) {
+            Ok(Some(lba)) => {
+                let _ = writeln!(
+                    uart,
+                    "mitosOS: MBR found on ATA disk, first partition at LBA {lba}"
+                );
+                let partitioned: Box<dyn block::BlockDevice> =
+                    Box::new(block::PartitionBlockDevice::new(dev, lba as usize));
+                crate::fs::fat32::Fat32FileSystem::mount(partitioned)
+            }
+            Ok(None) => crate::fs::fat32::Fat32FileSystem::mount(dev),
+            Err(e) => {
+                let _ = writeln!(
+                    uart,
+                    "mitosOS: WARN MBR probe failed ({e}), trying LBA 0 directly"
+                );
+                crate::fs::fat32::Fat32FileSystem::mount(dev)
+            }
+        };
+
+        match mount_result {
             Ok(mut fat32_fs) => match fat32_fs.read_file_by_path("/test.txt") {
                 Ok(content) => {
                     let _ = writeln!(uart, "mitosOS: /test.txt on ATA disk: {} bytes", content.len());
