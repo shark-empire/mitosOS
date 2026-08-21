@@ -21,7 +21,18 @@ if [ -d limine ]; then
 fi
 
 echo "==> Cloning Limine (binary release branch: prebuilt stages + portable host-tool source)"
-git clone https://github.com/limine-bootloader/limine.git --branch=v9.x-binary --depth=1
+# v11.x, not v9.x: v9.x's own PROTOCOL.md caps out at base revision 3
+# ("so far, 4 base revisions are specified: 0 through 3" -- same as
+# v8.x). Base revision 4 -- the one that guarantees ACPI tables land
+# in an HHDM-mapped memory map region, which src/hal/acpi.rs and
+# src/limine.rs now require -- only exists in the newer protocol
+# spec v10.x/v11.x implement. Confirmed empirically too: booting
+# against v9.x-binary, Limine itself reports back "loaded base
+# revision: 3" even though the kernel requests 4, and PROTOCOL.md
+# requires bootloaders to report the *actual* base revision used
+# regardless of what was requested -- so that's not a kernel-side
+# bug, it's this binary genuinely not implementing revision 4.
+git clone https://github.com/limine-bootloader/limine.git --branch=v11.x-binary --depth=1
 
 
 echo "==> Building the limine host tool"
