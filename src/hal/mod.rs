@@ -1,6 +1,10 @@
 // src/hal/mod.rs
 
 pub mod acpi;
+pub mod madt;
+pub mod apic;
+pub mod ioapic;
+pub mod smp;
 
 /// This used to also fetch the RSDP and parse it itself, in a second
 /// copy of the exact same logic acpi::init() has -- both got called

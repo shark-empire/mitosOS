@@ -577,10 +577,21 @@ fn parse_acpi_table(table_addr: usize) {
                 )
                 .read_unaligned();
 
+            let table_length =
+                core::ptr::addr_of!(header.length)
+                    .read_unaligned() as usize;
+
             ulog!(
                 "ACPI: Found MADT (Local APIC at 0x{:X})",
                 local_apic_address
             );
+
+            // The fixed header above only ever carries the default
+            // Local APIC address -- everything AP bring-up actually
+            // needs (per-CPU Local APIC IDs, the IO-APIC's own
+            // address) lives in the variable-length entry list right
+            // after it. See hal::madt's module doc comment.
+            crate::hal::madt::parse(table_virt as usize, table_length);
         } else if signature == *b"MCFG" {
             ulog!(
                 "ACPI: Found MCFG (PCIe Configuration Space)"
