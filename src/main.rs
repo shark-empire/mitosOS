@@ -200,7 +200,7 @@ fn kmain_common() -> ! {
         crate::pci::init_ahci_devices(&mut uart);
     }
 
-    // --- Ramdisk & VFS Mounting ---
+       // --- Ramdisk & VFS Mounting ---
     let inited: Option<ramdisk::TarFileSystem> = {
         #[cfg(target_arch = "aarch64")]
         {
@@ -213,13 +213,15 @@ fn kmain_common() -> ! {
                 None => {
                     let _ = writeln!(
                         uart,
-                        "mitosOS: WARN no ramdisk module from bootloader (check limine.conf's module_path)"
+                        "mitosOS: WARN no ramdisk from bootloader, falling back to embedded RAW_TAR"
                     );
-                    None
+                    // This wires up RAW_TAR and new_embedded for x86_64!
+                    ramdisk::TarFileSystem::new_embedded() 
                 }
             }
         }
     };
+
 
     if let Some(tar_fs) = inited {
         let adapter = alloc::sync::Arc::new(crate::fs::tar_adapter::TarFsAdapter::new(tar_fs));
@@ -286,11 +288,11 @@ fn kmain_common() -> ! {
         fb.clear(Color::BLACK);
         Framebuffer::draw_boot_splash(&mut fb);
 
-        fb.draw_string(
+         fb.draw_string(
             10,
             70,
             "mitosOS System Init...",
-            Color::GREEN,
+            Color::YELLOW, // Wired up YELLOW
         );
 
         fb.draw_string(
@@ -301,8 +303,17 @@ fn kmain_common() -> ! {
             } else {
                 "Ramdisk: missing"
             },
-            Color::CYAN,
+            if inited.is_some() { Color::GREEN } else { Color::RED }, // Wired up RED
         );
+
+        // Add one more line to wire up MAGENTA
+        fb.draw_string(
+            10, 
+            110, 
+            "Booting modules...", 
+            Color::MAGENTA
+        );
+
 
         let terminal = graphics::Terminal::new(fb);
         let fb_width = terminal.fb.width;
