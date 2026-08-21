@@ -55,6 +55,7 @@ static mut DOUBLE_FAULT_STACK: IstStack = IstStack([0; DF_STACK_SIZE]);
 // TSS
 // ---------------------------------------------------------------------
 
+#[derive(Clone, Copy)]
 #[repr(C, packed)]
 struct Tss {
     reserved0: u32,
@@ -131,6 +132,7 @@ const fn tss_descriptor_bits(base: u64, limit: u32) -> (u64, u64) {
     (low, high)
 }
 
+#[derive(Clone, Copy)]
 #[repr(C)]
 struct Gdt {
     null: GdtEntry,
@@ -282,5 +284,97 @@ pub unsafe fn enter_usermode(entry: usize, user_stack_top: usize) -> ! {
             entry = in(reg) entry as u64,
             options(noreturn),
         );
+    }
+}
+
+// ---------------------------------------------------------------------
+// Per-CPU GDT/TSS (APs)
+// ---------------------------------------------------------------------
+//
+// Every core needs its own GDT purely because of the TSS: a TSS
+// descriptor's "busy" bit is set by `ltr` and would collide if two
+// cores ever pointed their TR at the very same descriptor
+// simultaneously -- each core needs its own TSS *descriptor* (even if
+// the code/data descriptor *values* around it are identical). The
+// code/data descriptor values below are deliberately identical to
+// BSP's own GDT (init(), above): interrupts.rs's IDT gates hardcode
+// gdt_selector=0x08 for every vector, on every core, so 0x08/0x10/...
+// have to mean the same thing (flat ring-0 code/data) in every
+// per-CPU GDT for that to keep working.
+
+use crate::hal::madt::MAX_CPUS;
+
+const AP_DF_STACK_SIZE: usize = 8192;
+
+#[derive(Clone, Copy)]
+struct PerCpu {
+    gdt: Gdt,
+    tss: Tss,
+}
+
+impl PerCpu {
+    const fn new() -> Self {
+        Self {
+            gdt: Gdt {
+                null: GdtEntry::null(),
+                kernel_code: GdtEntry::flat(0x9A, 0xA),
+                kernel_data: GdtEntry::flat(0x92, 0xC),
+                user_code: GdtEntry::flat(0xFA, 0xA),
+                user_data: GdtEntry::flat(0xF2, 0xC),
+                // Patched in init_ap(), same reason as BSP's GDT above.
+                tss_low: GdtEntry::null(),
+                tss_high: GdtEntry::null(),
+            },
+            tss: Tss::new(),
+        }
+    }
+}
+
+static mut AP_GDTS: [PerCpu; MAX_CPUS] = [PerCpu::new(); MAX_CPUS];
+
+/// Per-CPU double-fault (IST1) stacks -- one per possible AP, so a #DF
+/// on one core can never clobber another's in-flight #DF, the same
+/// reasoning DOUBLE_FAULT_STACK above exists for the BSP. Indexed by
+/// the same `cpu_index` hal::smp assigns each AP.
+#[derive(Clone, Copy)]
+#[repr(align(16))]
+struct ApDfStack([u8; AP_DF_STACK_SIZE]);
+
+static mut AP_DF_STACKS: [ApDfStack; MAX_CPUS] = [ApDfStack([0; AP_DF_STACK_SIZE]); MAX_CPUS];
+
+/// Builds, loads, and activates `cpu_index`'s own GDT + TSS. Called
+/// once by each AP, from hal::smp's rust_ap_entry, before that core
+/// does anything that could fault -- the shared IDT's #DF gate
+/// (interrupts.rs) points at IST1 on whichever TSS is currently
+/// loaded, so a valid per-CPU TSS has to be in place before this core
+/// loads that IDT (interrupts::load_idt_this_core) or unmasks
+/// interrupts.
+///
+/// # Safety
+/// `cpu_index` must be `< hal::madt::MAX_CPUS` and unique per core --
+/// hal::smp assigns these and guarantees both. Reusing an index across
+/// two cores would let them share a TSS, which is unsound (see this
+/// section's doc comment).
+pub unsafe fn init_ap(cpu_index: usize) {
+    unsafe {
+        let gdt_ptr: *mut PerCpu = (&raw mut AP_GDTS).cast::<PerCpu>().add(cpu_index);
+        let stack_ptr: *mut ApDfStack = (&raw mut AP_DF_STACKS).cast::<ApDfStack>().add(cpu_index);
+
+        let df_stack_top = stack_ptr as u64 + AP_DF_STACK_SIZE as u64;
+        (&raw mut (*gdt_ptr).tss.ist[DOUBLE_FAULT_IST_INDEX]).write(df_stack_top);
+
+        let tss_base = (&raw const (*gdt_ptr).tss) as u64;
+        let tss_limit = (size_of::<Tss>() - 1) as u32;
+        let (low, high) = tss_descriptor_bits(tss_base, tss_limit);
+        (&raw mut (*gdt_ptr).gdt.tss_low).write(GdtEntry(low));
+        (&raw mut (*gdt_ptr).gdt.tss_high).write(GdtEntry(high));
+
+        let ptr = DescriptorTablePointer {
+            limit: (size_of::<Gdt>() - 1) as u16,
+            base: (&raw const (*gdt_ptr).gdt) as u64,
+        };
+        gdt_flush(&ptr);
+
+        core::arch::asm!("ltr {0:x}", in(reg) TSS_SELECTOR, options(nostack, nomem));
     }
 }

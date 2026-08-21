@@ -145,6 +145,14 @@ fn kmain_common() -> ! {
         #[cfg(target_arch = "x86_64")]
         hal::init();
 
+        // 4a. Bring up any other CPUs the MADT reported. Must run here --
+        // after hal::init() (which parses the MADT) but strictly before
+        // reclaim_boot_memory()/unmap_low_half_identity_map() below --
+        // see hal::smp's module doc comment for exactly why this
+        // ordering is load-bearing, not incidental.
+        #[cfg(target_arch = "x86_64")]
+        hal::smp::start_aps();
+
         // 4b. Reclaim temporary bootloader & ACPI memory regions back into PMM
         #[cfg(target_arch = "x86_64")]
         memory::reclaim_boot_memory();

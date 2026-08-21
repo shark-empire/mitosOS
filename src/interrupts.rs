@@ -384,6 +384,33 @@ mod imp {
         }
     } 
 
+    /// Loads the same shared IDT `init()` already built on the BSP
+    /// onto whichever core calls this. Safe to call from any number
+    /// of cores concurrently: the IDT is fully built and never
+    /// mutated again by the time hal::smp brings up the first AP
+    /// (see main.rs's boot order), so every core just points its own
+    /// IDTR at the same, by-then-read-only, table.
+    pub unsafe fn load_idt() {
+        unsafe {
+            #[repr(C, packed)]
+            struct IdtPointer {
+                limit: u16,
+                base: usize,
+            }
+
+            let idt_ptr = IdtPointer {
+                limit: (core::mem::size_of::<InterruptDescriptorTable>() - 1) as u16,
+                base: &raw const IDT as usize,
+            };
+
+            core::arch::asm!(
+                "lidt [{}]",
+                in(reg) &idt_ptr,
+                options(readonly, nostack, preserves_flags)
+            );
+        }
+    }
+
     #[unsafe(no_mangle)]
     pub extern "C" fn raw_uart_interrupt_handler() {
         const COM1_DATA: u16 = 0x3F8;
@@ -1044,6 +1071,17 @@ pub extern "C" fn x86_syscall_trap(frame: &mut crate::task::TaskContext) {
 
     let ret = crate::syscall::syscall_handler(sys_num, arg1, arg2, arg3);
     frame.rax = ret; // Return value placed back in rax
+}
+
+/// Loads the shared IDT on whichever core calls this -- see
+/// imp::load_idt's doc comment. x86_64-only: aarch64 cores each set up
+/// their own exception vector base register at reset (see boot.s),
+/// there's no separate "load a table" step to repeat per-core there.
+#[cfg(target_arch = "x86_64")]
+pub unsafe fn load_idt_this_core() {
+    unsafe {
+        imp::load_idt();
+    }
 }
 
 #[inline(always)]
