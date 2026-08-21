@@ -315,67 +315,83 @@ pub fn init() {
     let mut root_table: Option<RootTable> = None;
 
     match get_limine_rsdp() {
-        Ok(rsdp_phys) => {
-            // PROTOCOL.md documents the RSDP address as physical at
-            // exactly base revision 3 (what this kernel requests --
-            // see limine.rs::BASE_REVISION) and HHDM-virtual at every
-            // other revision -- and the address really does come
-            // across untranslated (see limine::rsdp()'s doc comment),
-            // consistent with that. But translating it via the HHDM
-            // offset alone wasn't enough to make it validate in
-            // practice (confirmed: the translated address reads real,
-            // structured, non-zero bytes -- just not "RSD PTR " --
-            // while the raw one reads all zero, so neither is simply
-            // "unmapped"), so this tries both interpretations and
-            // logs which one, if either, actually worked.
-            let rsdp_translated = phys_to_virt(rsdp_phys);
-            match parse_rsdp(rsdp_translated) {
+        Ok(rsdp_addr) => {
+            // PROTOCOL.md: the RSDP address is physical *only* when
+            // this kernel was actually loaded at exactly base
+            // revision 3 -- every other revision (0-2, and 4+) hands
+            // it back already HHDM-virtual. Base revision 3 is also
+            // the one revision whose HHDM is *restrictive* (only
+            // Usable / Bootloader-reclaimable / Executable-and
+            // -modules / Framebuffer regions are mapped) with no
+            // guarantee ACPI tables live in any of those -- BIOS
+            // firmware conventionally puts the RSDP in the EBDA or
+            // the main BIOS ROM area, both typically typed Reserved,
+            // which revision 3 simply doesn't map anywhere (and
+            // identity mapping was dropped back at revision 1
+            // already). That's the actual root cause behind this
+            // failing under revision 3: not a wrong address, an
+            // *unmapped* one -- no interpretation of it reads real
+            // data, translated or raw.
+            //
+            // Base revision 4 fixes this at the protocol level (see
+            // limine.rs::REQUESTED_BASE_REVISION), so the normal case
+            // is `revision == 4` and `rsdp_addr` is already usable
+            // directly. The `revision == 3` branch below only exists
+            // for an older bootloader that can't grant 4 and falls
+            // back to 3 -- PROTOCOL.md still guarantees at least 3.
+            let revision = crate::limine::loaded_base_revision();
+            let primary = if revision == 3 { phys_to_virt(rsdp_addr) } else { rsdp_addr };
+            let secondary = if revision == 3 { rsdp_addr } else { phys_to_virt(rsdp_addr) };
+
+            match parse_rsdp(primary) {
                 Ok(root) => {
                     ulog!(
-                        "ACPI: RSDP valid at translated address 0x{:X} (physical 0x{:X})",
-                        rsdp_translated,
-                        rsdp_phys
+                        "ACPI: RSDP valid at 0x{:X} (loaded base revision {})",
+                        primary,
+                        revision
                     );
                     root_table = Some(root);
                 }
-                Err(e_translated) => match parse_rsdp(rsdp_phys) {
+                Err(e_primary) => match parse_rsdp(secondary) {
                     Ok(root) => {
                         ulog!(
-                            "ACPI: RSDP valid at raw/untranslated address 0x{:X} -- \
-                             translated address 0x{:X} did not validate: {}",
-                            rsdp_phys,
-                            rsdp_translated,
-                            e_translated
+                            "ACPI: RSDP valid at fallback address 0x{:X} (loaded base \
+                             revision {}) -- primary address 0x{:X} did not validate: {}",
+                            secondary,
+                            revision,
+                            primary,
+                            e_primary
                         );
                         root_table = Some(root);
                     }
-                    Err(e_raw) => {
+                    Err(e_secondary) => {
                         ulog!(
-                            "ACPI: Failed to parse RSDP at translated 0x{:X} ({}) \
-                             or raw 0x{:X} ({}); current HHDM offset: 0x{:X}",
-                            rsdp_translated,
-                            e_translated,
-                            rsdp_phys,
-                            e_raw,
+                            "ACPI: Failed to parse RSDP at 0x{:X} ({}) or 0x{:X} ({}); \
+                             loaded base revision: {}, HHDM offset: 0x{:X}",
+                            primary,
+                            e_primary,
+                            secondary,
+                            e_secondary,
+                            revision,
                             hhdm_offset()
                         );
-                        let bt = unsafe { dump16(rsdp_translated) };
+                        let bp = unsafe { dump16(primary) };
                         ulog!(
-                            "ACPI: bytes at translated 0x{:X}: \
+                            "ACPI: bytes at 0x{:X}: \
                              {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} \
                              {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
-                            rsdp_translated,
-                            bt[0], bt[1], bt[2], bt[3], bt[4], bt[5], bt[6], bt[7],
-                            bt[8], bt[9], bt[10], bt[11], bt[12], bt[13], bt[14], bt[15]
+                            primary,
+                            bp[0], bp[1], bp[2], bp[3], bp[4], bp[5], bp[6], bp[7],
+                            bp[8], bp[9], bp[10], bp[11], bp[12], bp[13], bp[14], bp[15]
                         );
-                        let br = unsafe { dump16(rsdp_phys) };
+                        let bs = unsafe { dump16(secondary) };
                         ulog!(
-                            "ACPI: bytes at raw 0x{:X}: \
+                            "ACPI: bytes at 0x{:X}: \
                              {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} \
                              {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
-                            rsdp_phys,
-                            br[0], br[1], br[2], br[3], br[4], br[5], br[6], br[7],
-                            br[8], br[9], br[10], br[11], br[12], br[13], br[14], br[15]
+                            secondary,
+                            bs[0], bs[1], bs[2], bs[3], bs[4], bs[5], bs[6], bs[7],
+                            bs[8], bs[9], bs[10], bs[11], bs[12], bs[13], bs[14], bs[15]
                         );
                     }
                 },
@@ -395,6 +411,13 @@ pub fn init() {
         // main BIOS read-only area, so this works regardless of
         // whatever's wrong with Limine's pointer or HHDM coverage of
         // wherever it points.
+        //
+        // Note this can still come up empty under base revision 3
+        // even with the fix above, since it walks the *whole*
+        // EBDA/BIOS-ROM range via phys_to_virt, not just the specific
+        // page(s) base revision 4 guarantees are mapped -- harmless
+        // (same "not found" result as before the fix), just not
+        // expected to be needed in the normal (revision 4) case.
         match scan_bios_for_rsdp() {
             Some(found_virt) => {
                 ulog!("ACPI: RSDP found via BIOS/EBDA scan at 0x{:X}", found_virt);
