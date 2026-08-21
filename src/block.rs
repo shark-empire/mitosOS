@@ -48,3 +48,33 @@ impl BlockDevice for RamBlockDevice {
         Ok(())
     }
 }
+
+/// A `BlockDevice` adapter that offsets every sector access by a fixed
+/// LBA, so a filesystem driver written against "sector 0 == start of
+/// volume" (like `fs::fat32`) can be mounted on a real MBR-partitioned
+/// disk without knowing anything about partitioning itself. The offset
+/// normally comes from `fs::mbr::find_first_partition_lba`.
+pub struct PartitionBlockDevice {
+    inner: alloc::boxed::Box<dyn BlockDevice>,
+    lba_offset: usize,
+}
+
+impl PartitionBlockDevice {
+    pub fn new(inner: alloc::boxed::Box<dyn BlockDevice>, lba_offset: usize) -> Self {
+        Self { inner, lba_offset }
+    }
+}
+
+impl BlockDevice for PartitionBlockDevice {
+    fn read_sector(&mut self, sector_id: usize, buf: &mut [u8; SECTOR_SIZE]) -> Result<(), &'static str> {
+        self.inner.read_sector(sector_id + self.lba_offset, buf)
+    }
+
+    fn write_sector(&mut self, sector_id: usize, buf: &[u8; SECTOR_SIZE]) -> Result<(), &'static str> {
+        self.inner.write_sector(sector_id + self.lba_offset, buf)
+    }
+
+    fn sector_size(&self) -> usize {
+        self.inner.sector_size()
+    }
+}
